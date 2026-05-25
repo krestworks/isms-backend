@@ -1,0 +1,1165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Station {
+  id        String    @id @default(cuid())
+  name      String
+  type      String    @default("Branch")
+  status    String    @default("Active")
+  city      String?
+  address   String?
+  phone     String?
+  openedOn  DateTime?
+  deletedAt DateTime?
+  deletedBy String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  description String?
+  category    String
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+  userPermissions UserPermission[]
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// stationId = "global" means the role applies across all stations
+model UserRole {
+  id        String @id @default(cuid())
+  userId    String
+  roleId    String
+  stationId String @default("global")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId, stationId])
+}
+
+// User-level permission overrides — granted=true adds, granted=false revokes
+// stationId = "global" applies across all stations
+model UserPermission {
+  id           String   @id @default(cuid())
+  userId       String
+  permissionId String
+  stationId    String   @default("global")
+  granted      Boolean  @default(true)
+  grantedBy    String?  // userId of the Manager/Admin who set this
+  grantedAt    DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId, stationId])
+}
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  password         String
+  name             String
+  phone            String?
+  employeeId       String?
+  isEmployee       Boolean   @default(false)
+  activeRole       String    @default("Employee")
+  homeLocation     String?
+  status           String    @default("Active")
+  loginAttempts    Int       @default(0)
+  lockedUntil      DateTime?
+  lastLogin        DateTime?
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  auditLogs       AuditLog[]
+  userRoles       UserRole[]
+  userPermissions UserPermission[]
+  refreshTokens   RefreshToken[]
+  employee        Employee?
+}
+
+// One row per active session — supports multi-device and per-session revocation
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── HR Business Setup ─────────────────────────────────────────────────────────
+
+// stationId = "global" means applicable across all stations
+model Department {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  stationId   String   @default("global")
+  parentId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent    Department?  @relation("DeptTree", fields: [parentId], references: [id])
+  children  Department[] @relation("DeptTree")
+  employees Employee[]
+  jobTitles JobTitle[]
+
+  @@unique([name, stationId])
+}
+
+model JobTitle {
+  id           String   @id @default(cuid())
+  title        String
+  description  String?
+  departmentId String?
+  stationId    String   @default("global")
+  grade        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  department Department? @relation(fields: [departmentId], references: [id])
+  employees  Employee[]
+
+  @@unique([title, stationId])
+}
+
+// Which modules are enabled per station; HR is seeded as enabled by default
+model StationModule {
+  id        String   @id @default(cuid())
+  stationId String
+  module    String
+  isEnabled Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([stationId, module])
+}
+
+// ── Employee Profile ──────────────────────────────────────────────────────────
+
+model Employee {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  employeeNumber   String    @unique
+  stationId        String
+  departmentId     String?
+  jobTitleId       String?
+  employmentType   String    @default("FullTime")
+  contractType     String?
+  startDate        DateTime
+  endDate          DateTime?
+  nationalId       String?
+  dateOfBirth      DateTime?
+  gender           String?
+  address          String?
+  emergencyContact String?
+  bankDetails      String?
+  salaryGrade      String?
+  basicSalary      Float?
+  status           String    @default("Active")
+  terminatedAt     DateTime?
+  terminationNote  String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user                User                 @relation(fields: [userId], references: [id])
+  department          Department?          @relation(fields: [departmentId], references: [id])
+  jobTitle            JobTitle?            @relation(fields: [jobTitleId], references: [id])
+  attendance          Attendance[]
+  leaveRequests       LeaveRequest[]
+  leaveBalances       LeaveBalance[]
+  shiftAssignments    ShiftAssignment[]
+  disciplinaryRecords DisciplinaryRecord[]
+}
+
+// ── Shifts & Attendance ───────────────────────────────────────────────────────
+
+model ShiftPattern {
+  id        String   @id @default(cuid())
+  name      String
+  startTime String
+  endTime   String
+  stationId String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignments ShiftAssignment[]
+
+  @@unique([name, stationId])
+}
+
+model ShiftAssignment {
+  id             String   @id @default(cuid())
+  employeeId     String
+  shiftPatternId String
+  date           DateTime
+  stationId      String
+  createdBy      String
+  createdAt      DateTime @default(now())
+
+  employee     Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shiftPattern ShiftPattern @relation(fields: [shiftPatternId], references: [id])
+
+  @@unique([employeeId, date])
+}
+
+model Attendance {
+  id         String    @id @default(cuid())
+  employeeId String
+  date       DateTime
+  checkIn    DateTime?
+  checkOut   DateTime?
+  status     String    @default("Present")
+  note       String?
+  recordedBy String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, date])
+}
+
+// ── Leave Management ──────────────────────────────────────────────────────────
+
+model LeaveType {
+  id          String   @id @default(cuid())
+  name        String
+  daysAllowed Int      @default(21)
+  isPaid      Boolean  @default(true)
+  stationId   String   @default("global")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  requests LeaveRequest[]
+  balances LeaveBalance[]
+
+  @@unique([name, stationId])
+}
+
+model LeaveBalance {
+  id          String @id @default(cuid())
+  employeeId  String
+  leaveTypeId String
+  year        Int
+  total       Int
+  used        Int    @default(0)
+  pending     Int    @default(0)
+
+  employee  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveType LeaveType @relation(fields: [leaveTypeId], references: [id])
+
+  @@unique([employeeId, leaveTypeId, year])
+}
+
+model LeaveRequest {
+  id          String    @id @default(cuid())
+  employeeId  String
+  leaveTypeId String
+  startDate   DateTime
+  endDate     DateTime
+  days        Int
+  reason      String?
+  status      String    @default("Pending")
+  approvedBy  String?
+  approvedAt  DateTime?
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  employee  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveType LeaveType @relation(fields: [leaveTypeId], references: [id])
+}
+
+// ── Disciplinary ──────────────────────────────────────────────────────────────
+
+model DisciplinaryRecord {
+  id          String   @id @default(cuid())
+  employeeId  String
+  type        String
+  description String
+  date        DateTime
+  recordedBy  String
+  createdAt   DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+// ── Fuel Module ───────────────────────────────────────────────────────────────
+
+model FuelTank {
+  id                 String    @id @default(cuid())
+  stationId          String
+  name               String
+  fuelType           String
+  capacity           Float
+  currentLevel       Float     @default(0)
+  lastDipReading     Float?
+  lastDeliveryDate   DateTime?
+  lastDeliveryAmount Float?
+  status             String    @default("operational")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sales           FuelSale[]
+  deliveries      FuelDelivery[]
+  reconciliations FuelReconciliation[]
+
+  @@unique([name, stationId])
+}
+
+model FuelSale {
+  id            String   @id @default(cuid())
+  stationId     String
+  tankId        String?
+  pumpNumber    Int
+  fuelType      String
+  litres        Float
+  pricePerLitre Float
+  amount        Float
+  discount      Float    @default(0)
+  netAmount     Float
+  attendant     String?
+  paymentMethod String   @default("Cash")
+  paymentStatus String   @default("paid")
+  customer      String?
+  receiptNo     String
+  date          DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tank FuelTank? @relation(fields: [tankId], references: [id], onDelete: SetNull)
+}
+
+model FuelDelivery {
+  id           String   @id @default(cuid())
+  stationId    String
+  tankId       String?
+  litres       Float
+  supplier     String?
+  deliveryNote String?
+  date         DateTime
+  recordedBy   String?
+  createdAt    DateTime @default(now())
+
+  tank FuelTank? @relation(fields: [tankId], references: [id], onDelete: SetNull)
+}
+
+model FuelReconciliation {
+  id                   String    @id @default(cuid())
+  stationId            String
+  date                 DateTime
+  fuelType             String
+  tankId               String?
+  openingStock         Float
+  deliveries           Float     @default(0)
+  expectedSales        Float
+  actualSales          Float
+  closingStockExpected Float
+  closingStockActual   Float
+  variance             Float
+  variancePct          Float
+  status               String
+  notes                String?
+  approvedBy           String?
+  approvedAt           DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tank FuelTank? @relation(fields: [tankId], references: [id], onDelete: SetNull)
+}
+
+model FuelProduct {
+  id              String   @id @default(cuid())
+  stationId       String
+  fuelType        String
+  buyingPrice     Float    @default(0)
+  markedPrice     Float    @default(0)
+  sellingPrice    Float    @default(0)
+  reorderLevel    Float    @default(5000)
+  supplier        String?
+  supplierContact String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([stationId, fuelType])
+}
+
+// ── LPG Module ────────────────────────────────────────────────────────────────
+
+model LpgCylinder {
+  id             String    @id @default(cuid())
+  stationId      String
+  serialNo       String
+  size           String
+  weight         Float     @default(0)
+  condition      String    @default("full")
+  status         String    @default("available")
+  buyingPrice    Float     @default(0)
+  markedPrice    Float     @default(0)
+  sellingPrice   Float     @default(0)
+  supplier       String?
+  lastRefillDate DateTime?
+  location       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([serialNo, stationId])
+}
+
+model LpgSale {
+  id            String   @id @default(cuid())
+  stationId     String
+  date          DateTime
+  receiptNo     String
+  customer      String?
+  cylinderSize  String
+  quantity      Int
+  unitPrice     Float
+  discount      Float    @default(0)
+  totalAmount   Float
+  paymentMethod String   @default("Cash")
+  paymentStatus String   @default("paid")
+  attendant     String?
+  exchangeType  String   @default("Exchange")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model LpgRefill {
+  id           String   @id @default(cuid())
+  stationId    String
+  date         DateTime
+  batchNo      String
+  cylinderSize String
+  quantity     Int
+  costPerUnit  Float
+  totalCost    Float
+  supplier     String
+  receivedBy   String?
+  status       String   @default("pending")
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model LpgSupplier {
+  id            String    @id @default(cuid())
+  stationId     String
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  cylinderTypes String?
+  paymentTerms  String    @default("Net 30")
+  rating        Float     @default(0)
+  status        String    @default("active")
+  totalOrders   Int       @default(0)
+  lastOrderDate DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([name, stationId])
+}
+
+model LpgOrder {
+  id              String    @id @default(cuid())
+  stationId       String
+  orderNo         String
+  date            DateTime
+  client          String
+  clientPhone     String?
+  cylinderSize    String
+  quantity        Int
+  unitPrice       Float
+  totalAmount     Float
+  orderStatus     String    @default("pending")
+  paymentStatus   String    @default("pending")
+  paymentMethod   String    @default("Cash")
+  processedBy     String?
+  deliveredBy     String?
+  deliveryAddress String?
+  deliveryDate    DateTime?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model LpgInvoice {
+  id            String    @id @default(cuid())
+  stationId     String
+  invoiceNo     String
+  date          DateTime
+  dueDate       DateTime?
+  client        String
+  clientPhone   String?
+  clientAddress String?
+  items         String
+  subtotal      Float
+  vatRate       Float     @default(16)
+  vatAmount     Float
+  discount      Float     @default(0)
+  totalAmount   Float
+  paymentStatus String    @default("pending")
+  paymentMethod String    @default("Invoice")
+  paidDate      DateTime?
+  type          String    @default("invoice")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ── Water Module ──────────────────────────────────────────────────────────────
+
+model WaterProduction {
+  id             String   @id @default(cuid())
+  stationId      String
+  date           DateTime
+  shift          String   @default("Morning")
+  litresProduced Float
+  litresWasted   Float    @default(0)
+  netOutput      Float
+  operator       String?
+  machineId      String?
+  status         String   @default("active")
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model WaterEquipment {
+  id              String    @id @default(cuid())
+  stationId       String
+  name            String
+  type            String
+  serialNo        String?
+  status          String    @default("operational")
+  lastMaintenance DateTime?
+  nextMaintenance DateTime?
+  location        String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model WaterSale {
+  id            String   @id @default(cuid())
+  stationId     String
+  date          DateTime
+  receiptNo     String
+  customer      String?
+  litres        Float
+  pricePerLitre Float
+  discount      Float    @default(0)
+  totalAmount   Float
+  paymentMethod String   @default("Cash")
+  paymentStatus String   @default("paid")
+  attendant     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model WaterOrder {
+  id              String    @id @default(cuid())
+  stationId       String
+  orderNo         String
+  date            DateTime
+  client          String
+  clientPhone     String?
+  litres          Float
+  pricePerLitre   Float
+  totalAmount     Float
+  orderStatus     String    @default("pending")
+  paymentStatus   String    @default("pending")
+  paymentMethod   String    @default("Cash")
+  processedBy     String?
+  deliveredBy     String?
+  deliveryAddress String?
+  deliveryDate    DateTime?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model WaterDistribution {
+  id              String    @id @default(cuid())
+  stationId       String
+  date            DateTime
+  vehicle         String?
+  driver          String?
+  destination     String?
+  litresLoaded    Float
+  litresDelivered Float     @default(0)
+  variance        Float     @default(0)
+  client          String?
+  status          String    @default("active")
+  departureTime   String?
+  arrivalTime     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model WaterInvoice {
+  id          String    @id @default(cuid())
+  stationId   String
+  invoiceNo   String
+  date        DateTime
+  dueDate     DateTime?
+  client      String
+  type        String    @default("TAX INVOICE")
+  items       String
+  subtotal    Float
+  vatAmount   Float
+  totalAmount Float
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  subject   String
+  detail    String
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ── Automotive ────────────────────────────────────────────────────────────────
+
+model AutoServiceRecord {
+  id            String    @id @default(cuid())
+  stationId     String
+  serviceNo     String
+  date          DateTime
+  vehicleReg    String
+  vehicleMake   String?
+  customerName  String
+  customerPhone String?
+  serviceType   String
+  description   String?
+  technician    String?
+  estimatedCost Float     @default(0)
+  actualCost    Float     @default(0)
+  status        String    @default("pending")
+  startTime     String?
+  endTime       String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model AutoBill {
+  id             String   @id @default(cuid())
+  stationId      String
+  billNo         String
+  date           DateTime
+  serviceRef     String?
+  customerName   String
+  vehicleReg     String
+  labourCharges  Float    @default(0)
+  partsCost      Float    @default(0)
+  discount       Float    @default(0)
+  totalAmount    Float    @default(0)
+  paymentMethod  String   @default("Cash")
+  paymentStatus  String   @default("pending")
+  paidAmount     Float    @default(0)
+  balance        Float    @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model AutoInvoice {
+  id          String    @id @default(cuid())
+  stationId   String
+  invoiceNo   String
+  date        DateTime
+  dueDate     DateTime?
+  type        String    @default("TAX INVOICE")
+  client      String
+  vehicleReg  String?
+  serviceRef  String?
+  items       String
+  subtotal    Float     @default(0)
+  vatAmount   Float     @default(0)
+  totalAmount Float     @default(0)
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model AutoPart {
+  id            String   @id @default(cuid())
+  stationId     String
+  name          String
+  category      String
+  partNumber    String?
+  supplier      String?
+  buyingPrice   Float    @default(0)
+  sellingPrice  Float    @default(0)
+  stockQty      Int      @default(0)
+  reorderLevel  Int      @default(5)
+  status        String   @default("in-stock")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model AutoServicePrice {
+  id             String   @id @default(cuid())
+  stationId      String
+  serviceName    String
+  category       String
+  labourCost     Float    @default(0)
+  partsEstimate  Float    @default(0)
+  totalPrice     Float    @default(0)
+  duration       String?
+  warranty       String?
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model AutoTechnician {
+  id              String   @id @default(cuid())
+  stationId       String
+  name            String
+  phone           String?
+  specialization  String?
+  experience      String?
+  certifications  String?
+  dailyRate       Float    @default(0)
+  jobsCompleted   Int      @default(0)
+  rating          Float    @default(0)
+  status          String   @default("active")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ── Carwash ───────────────────────────────────────────────────────────────────
+
+model CarwashSale {
+  id            String   @id @default(cuid())
+  stationId     String
+  receiptNo     String
+  date          DateTime
+  vehicleReg    String
+  washPackage   String
+  attendant     String?
+  paymentMethod String   @default("Cash")
+  amount        Float    @default(0)
+  status        String   @default("paid")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model CarwashBooking {
+  id          String   @id @default(cuid())
+  stationId   String
+  bookingRef  String
+  date        DateTime
+  time        String?
+  client      String
+  phone       String?
+  vehicleReg  String
+  washPackage String
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model CarwashStaff {
+  id              String   @id @default(cuid())
+  stationId       String
+  name            String
+  phone           String?
+  role            String   @default("Washer")
+  shift           String   @default("Morning")
+  rating          Float    @default(0)
+  washesCompleted Int      @default(0)
+  status          String   @default("on_duty")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model CarwashQueue {
+  id          String   @id @default(cuid())
+  stationId   String
+  ticketNo    String
+  date        DateTime
+  vehicleReg  String
+  vehicleType String   @default("Sedan")
+  washPackage String
+  assignedTo  String?
+  amount      Float    @default(0)
+  status      String   @default("waiting")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model CarwashPackage {
+  id           String   @id @default(cuid())
+  stationId    String
+  name         String
+  description  String?
+  duration     Int      @default(30)
+  price        Float    @default(0)
+  vehicleTypes String   @default("All")
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ── Business POS Module ───────────────────────────────────────────────────────
+
+model BizBusiness {
+  id            String   @id @default(cuid())
+  stationId     String
+  type          String   // mart | pharmacy | restaurant | bakery
+  name          String
+  taxRate       Float    @default(16)
+  currency      String   @default("KES")
+  receiptHeader String?
+  receiptFooter String?
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([stationId, type])
+}
+
+model BizCategory {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  color      String?
+  parentId   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model BizProduct {
+  id                   String   @id @default(cuid())
+  businessId           String
+  categoryId           String?
+  categoryName         String?
+  name                 String
+  sku                  String?
+  barcode              String?
+  description          String?
+  markedPrice          Float    @default(0)
+  price                Float    @default(0)
+  costPrice            Float    @default(0)
+  unit                 String   @default("pcs")
+  stockQty             Float    @default(0)
+  reorderLevel         Float    @default(5)
+  expiryDate           String?
+  requiresPrescription Boolean  @default(false)
+  status               String   @default("active")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model BizSupplier {
+  id            String   @id @default(cuid())
+  businessId    String
+  name          String
+  phone         String?
+  email         String?
+  address       String?
+  contactPerson String?
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model BizPurchaseOrder {
+  id           String   @id @default(cuid())
+  businessId   String
+  supplierId   String?
+  supplierName String?
+  orderRef     String
+  orderDate    String
+  expectedDate String?
+  items        String   // JSON [{productId,productName,qty,unitCost,totalCost}]
+  subtotal     Float    @default(0)
+  totalAmount  Float    @default(0)
+  status       String   @default("pending") // pending | received | partial | cancelled
+  notes        String?
+  receivedAt   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model BizSale {
+  id            String   @id @default(cuid())
+  businessId    String
+  saleRef       String
+  date          String
+  items         String   // JSON [{productId,name,qty,unitPrice,discount,totalPrice}]
+  subtotal      Float    @default(0)
+  discount      Float    @default(0)
+  taxRate       Float    @default(0)
+  taxAmount     Float    @default(0)
+  totalAmount   Float    @default(0)
+  paymentMethod String   @default("Cash")
+  amountPaid    Float    @default(0)
+  change        Float    @default(0)
+  cashier       String?
+  tableId       String?
+  tableNo       String?
+  notes         String?
+  status        String   @default("paid") // paid | unpaid | void | refunded
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model BizStockMovement {
+  id          String   @id @default(cuid())
+  businessId  String
+  productId   String
+  productName String
+  type        String   // purchase_in | sale_out | adjustment | return | wastage
+  qty         Float
+  before      Float    @default(0)
+  after       Float    @default(0)
+  reference   String?
+  notes       String?
+  date        String
+  createdAt   DateTime @default(now())
+}
+
+model BizExpense {
+  id            String   @id @default(cuid())
+  businessId    String
+  date          String
+  description   String
+  amount        Float    @default(0)
+  category      String?
+  paymentMethod String   @default("Cash")
+  recordedBy    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model BizTable {
+  id         String   @id @default(cuid())
+  businessId String
+  tableNo    String
+  capacity   Int      @default(4)
+  status     String   @default("available") // available | occupied | reserved
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([businessId, tableNo])
+}
+
+model BizKitchenOrder {
+  id         String   @id @default(cuid())
+  businessId String
+  tableId    String?
+  tableNo    String?
+  orderRef   String
+  items      String   // JSON
+  status     String   @default("pending") // pending | preparing | ready | served
+  notes      String?
+  saleId     String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// ── Clients & CRM ─────────────────────────────────────────────────────────────
+
+model Client {
+  id        String   @id @default(cuid())
+  stationId String
+  name      String
+  phone     String?
+  email     String?
+  type      String   @default("Individual") // Individual | Corporate
+  modules   String   @default("")           // comma-separated e.g. "Fuel,LPG"
+  notes     String?
+  totalSpent Float   @default(0)
+  visits    Int      @default(0)
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Coupon {
+  id            String   @id @default(cuid())
+  stationId     String
+  code          String
+  module        String   @default("Fuel")
+  discountType  String   @default("Percentage") // Percentage | Fixed
+  discountValue Float    @default(0)
+  minSpend      Float    @default(0)
+  maxUses       Int      @default(0)      // 0 = unlimited
+  usedCount     Int      @default(0)
+  validFrom     String
+  validTo       String
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([stationId, code])
+}
+
+// ── Station Settings ──────────────────────────────────────────────────────────
+
+// Stores arbitrary JSON config blobs per station (e.g. section="business", section="vat")
+model StationConfig {
+  id        String   @id @default(cuid())
+  stationId String
+  section   String
+  data      String   // JSON string
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([stationId, section])
+}
+
+model VatRate {
+  id        String   @id @default(cuid())
+  stationId String
+  name      String
+  rate      Float    @default(0)
+  appliesTo String   @default("")
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ── Finance Module ─────────────────────────────────────────────────────────────
+
+model FinanceRevenue {
+  id            String   @id @default(cuid())
+  stationId     String
+  date          String
+  module        String
+  category      String
+  description   String
+  amount        Float    @default(0)
+  paymentMethod String   @default("Cash")
+  reference     String?
+  status        String   @default("completed") // completed | pending
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model FinanceExpense {
+  id            String   @id @default(cuid())
+  stationId     String
+  date          String
+  module        String   @default("General")
+  category      String
+  vendor        String?
+  description   String
+  amount        Float    @default(0)
+  paymentMethod String   @default("Cash")
+  approvedBy    String?
+  status        String   @default("pending") // paid | pending | cancelled
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model FinanceBudget {
+  id        String   @id @default(cuid())
+  stationId String
+  year      Int
+  month     Int      // 1-12
+  module    String
+  metric    String   // "Revenue" | "Expenses"
+  amount    Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([stationId, year, month, module, metric])
+}
+
+// ── Reports Module ─────────────────────────────────────────────────────────────
+
+model ReportTemplate {
+  id        String   @id @default(cuid())
+  stationId String
+  name      String
+  module    String   @default("All")
+  frequency String   @default("daily")
+  sections  String   @default("")
+  status    String   @default("active")
+  lastUsed  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GeneratedReport {
+  id          String   @id @default(cuid())
+  stationId   String
+  templateId  String?
+  title       String
+  type        String   @default("daily")
+  module      String   @default("All")
+  period      String
+  format      String   @default("PDF")
+  generatedBy String
+  fileSize    String?
+  status      String   @default("completed")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ScheduledReport {
+  id         String   @id @default(cuid())
+  stationId  String
+  name       String
+  type       String
+  frequency  String
+  modules    String   @default("All")
+  recipients String
+  lastRun    String?
+  nextRun    String?
+  status     String   @default("active")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
