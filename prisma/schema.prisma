@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -118,7 +118,7 @@ model RefreshToken {
   expiresAt DateTime
   revoked   Boolean  @default(false)
   ipAddress String?
-  userAgent String?
+  userAgent String?  @db.Text
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -188,14 +188,14 @@ model Employee {
   nationalId       String?
   dateOfBirth      DateTime?
   gender           String?
-  address          String?
-  emergencyContact String?
-  bankDetails      String?
+  address          String?   @db.Text
+  emergencyContact String?   @db.Text
+  bankDetails      String?   @db.Text
   salaryGrade      String?
   basicSalary      Float?
   status           String    @default("Active")
   terminatedAt     DateTime?
-  terminationNote  String?
+  terminationNote  String?   @db.Text
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -316,7 +316,7 @@ model DisciplinaryRecord {
   id          String   @id @default(cuid())
   employeeId  String
   type        String
-  description String
+  description String   @db.Text
   date        DateTime
   recordedBy  String
   createdAt   DateTime @default(now())
@@ -535,7 +535,7 @@ model LpgInvoice {
   client        String
   clientPhone   String?
   clientAddress String?
-  items         String
+  items         String    @db.LongText
   subtotal      Float
   vatRate       Float     @default(16)
   vatAmount     Float
@@ -646,7 +646,7 @@ model WaterInvoice {
   dueDate     DateTime?
   client      String
   type        String    @default("TAX INVOICE")
-  items       String
+  items       String    @db.LongText
   subtotal    Float
   vatAmount   Float
   totalAmount Float
@@ -660,9 +660,9 @@ model AuditLog {
   userId    String
   action    String
   subject   String
-  detail    String
+  detail    String   @db.Text
   ipAddress String?
-  userAgent String?
+  userAgent String?  @db.Text
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id])
@@ -721,7 +721,7 @@ model AutoInvoice {
   client      String
   vehicleReg  String?
   serviceRef  String?
-  items       String
+  items       String    @db.LongText
   subtotal    Float     @default(0)
   vatAmount   Float     @default(0)
   totalAmount Float     @default(0)
@@ -922,7 +922,7 @@ model BizPurchaseOrder {
   orderRef     String
   orderDate    String
   expectedDate String?
-  items        String   // JSON [{productId,productName,qty,unitCost,totalCost}]
+  items        String   @db.LongText // JSON [{productId,productName,qty,unitCost,totalCost}]
   subtotal     Float    @default(0)
   totalAmount  Float    @default(0)
   status       String   @default("pending") // pending | received | partial | cancelled
@@ -937,7 +937,7 @@ model BizSale {
   businessId    String
   saleRef       String
   date          String
-  items         String   // JSON [{productId,name,qty,unitPrice,discount,totalPrice}]
+  items         String   @db.LongText // JSON [{productId,name,qty,unitPrice,discount,totalPrice}]
   subtotal      Float    @default(0)
   discount      Float    @default(0)
   taxRate       Float    @default(0)
@@ -1001,7 +1001,7 @@ model BizKitchenOrder {
   tableId    String?
   tableNo    String?
   orderRef   String
-  items      String   // JSON
+  items      String   @db.LongText // JSON
   status     String   @default("pending") // pending | preparing | ready | served
   notes      String?
   saleId     String?
@@ -1046,6 +1046,23 @@ model Coupon {
   @@unique([stationId, code])
 }
 
+model ClientOrder {
+  id          String   @id @default(cuid())
+  stationId   String
+  clientId    String?
+  clientName  String
+  orderRef    String
+  module      String   @default("Fuel") // Fuel | LPG | Water | Car Wash | Automotive | Business
+  description String
+  amount      Float    @default(0)
+  paymentMethod String @default("Cash")
+  status      String   @default("pending") // pending | processing | completed | cancelled
+  orderDate   String
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 // ── Station Settings ──────────────────────────────────────────────────────────
 
 // Stores arbitrary JSON config blobs per station (e.g. section="business", section="vat")
@@ -1053,7 +1070,7 @@ model StationConfig {
   id        String   @id @default(cuid())
   stationId String
   section   String
-  data      String   // JSON string
+  data      String   @db.LongText // JSON string
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
