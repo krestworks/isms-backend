@@ -19,6 +19,9 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-station-id"],
 }));
+console.log("FRONTEND URL:", config.frontendUrl);
+console.log("DATABASE URL:", config.databaseUrl);
+
 
 // ── Parsing ───────────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "10kb" }));

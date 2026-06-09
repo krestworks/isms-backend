@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "prisma migrate deploy && node index.js",
     "dev": "nodemon index.js",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
