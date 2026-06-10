@@ -422,7 +422,60 @@ async function main() {
     console.log(`    Roles: ${u.roles.join(", ")}`);
   }
 
-  // 5. Seed default StationModules for existing stations (HR always enabled)
+  // 5a. Employee records for isEmployee seed users
+  //     Creates minimal HR records so the Employee Portal works out of the box.
+  console.log("\nSeeding employee records for isEmployee users...");
+  const employeeUsers = SEED_USERS.filter(u => u.isEmployee);
+  for (const u of employeeUsers) {
+    const dbUser = await prisma.user.findUnique({ where: { email: u.email } });
+    if (!dbUser) continue;
+
+    const existing = await prisma.employee.findUnique({ where: { userId: dbUser.id } });
+    if (existing) {
+      console.log(`  Employee record exists for ${u.email}`);
+      continue;
+    }
+
+    // Ensure a "General" department exists for this station
+    let dept = await prisma.department.findFirst({ where: { stationId: station.id, name: "General" } });
+    if (!dept) {
+      dept = await prisma.department.create({
+        data: { name: "General", stationId: station.id, description: "Default department" },
+      });
+    }
+
+    // Ensure an "Attendant" job title exists for this station
+    let jt = await prisma.jobTitle.findFirst({ where: { stationId: station.id, title: "Attendant" } });
+    if (!jt) {
+      jt = await prisma.jobTitle.create({
+        data: { title: "Attendant", departmentId: dept.id, stationId: station.id, grade: "G1" },
+      });
+    }
+
+    await prisma.employee.create({
+      data: {
+        userId:         dbUser.id,
+        employeeNumber: u.employeeId,
+        stationId:      station.id,
+        departmentId:   dept.id,
+        jobTitleId:     jt.id,
+        employmentType: "Full-Time",
+        contractType:   "Permanent",
+        startDate:      new Date("2025-01-15"),
+        status:         "Active",
+        gender:         "Male",
+      },
+    });
+    console.log(`  Created employee record for ${u.email} (${u.employeeId})`);
+
+    // Also set homeLocation on the User so location scope works
+    await prisma.user.update({
+      where:  { id: dbUser.id },
+      data:   { homeLocation: station.id },
+    });
+  }
+
+  // 5b. Seed default StationModules for existing stations (HR always enabled)
   const ALL_MODULES = ["hr", "fuel", "lpg", "water", "carwash", "auto", "pos", "finance", "compliance"];
   const stations = await prisma.station.findMany();
   for (const s of stations) {

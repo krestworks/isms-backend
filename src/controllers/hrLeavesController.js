@@ -1,19 +1,17 @@
 "use strict";
 const prisma = require("../config/prisma");
+const { resolveStation, canAccessStation } = require("../middleware/station");
 
 // ── Leave Types ───────────────────────────────────────────────────────────────
 
 async function listLeaveTypes(req, res, next) {
   try {
-    const stationId = req.headers["x-station-id"] || req.query.stationId || "global";
-    const where = stationId === "global"
-      ? {}
-      : { OR: [{ stationId }, { stationId: "global" }] };
+    const stationId = await resolveStation(req);
+    const where = stationId
+      ? { OR: [{ stationId }, { stationId: "global" }] }
+      : {};
 
-    const types = await prisma.leaveType.findMany({
-      where,
-      orderBy: { name: "asc" },
-    });
+    const types = await prisma.leaveType.findMany({ where, orderBy: { name: "asc" } });
     res.json({ success: true, data: types });
   } catch (err) {
     next(err);
@@ -22,9 +20,12 @@ async function listLeaveTypes(req, res, next) {
 
 async function createLeaveType(req, res, next) {
   try {
-    const { name, daysAllowed = 21, isPaid = true } = req.body;
-    const stationId = req.headers["x-station-id"] || req.query.stationId || "global";
+    const stationId = await resolveStation(req);
+    if (!stationId) {
+      return res.status(422).json({ success: false, message: "Station context required" });
+    }
 
+    const { name, daysAllowed = 21, isPaid = true } = req.body;
     if (!name) return res.status(422).json({ success: false, message: "name is required" });
 
     const lt = await prisma.leaveType.create({
@@ -34,7 +35,7 @@ async function createLeaveType(req, res, next) {
     res.status(201).json({ success: true, message: "Leave type created", data: lt });
   } catch (err) {
     if (err.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A leave type with this name already exists for this scope" });
+      return res.status(409).json({ success: false, message: "A leave type with this name already exists for this station" });
     }
     next(err);
   }
@@ -42,24 +43,28 @@ async function createLeaveType(req, res, next) {
 
 async function updateLeaveType(req, res, next) {
   try {
-    const { name, daysAllowed, isPaid, isActive } = req.body;
     const lt = await prisma.leaveType.findUnique({ where: { id: req.params.id } });
     if (!lt) return res.status(404).json({ success: false, message: "Leave type not found" });
 
+    if (!await canAccessStation(req, lt.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const { name, daysAllowed, isPaid, isActive } = req.body;
     const updated = await prisma.leaveType.update({
       where: { id: req.params.id },
       data: {
-        name: name ? name.trim() : undefined,
+        name:        name        ? name.trim()                    : undefined,
         daysAllowed: daysAllowed !== undefined ? parseInt(daysAllowed, 10) : undefined,
-        isPaid: isPaid !== undefined ? Boolean(isPaid) : undefined,
-        isActive: isActive !== undefined ? Boolean(isActive) : undefined,
+        isPaid:      isPaid      !== undefined ? Boolean(isPaid)           : undefined,
+        isActive:    isActive    !== undefined ? Boolean(isActive)         : undefined,
       },
     });
 
     res.json({ success: true, message: "Leave type updated", data: updated });
   } catch (err) {
     if (err.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A leave type with this name already exists for this scope" });
+      return res.status(409).json({ success: false, message: "A leave type with this name already exists for this station" });
     }
     next(err);
   }
@@ -72,6 +77,10 @@ async function deleteLeaveType(req, res, next) {
       include: { _count: { select: { requests: true, balances: true } } },
     });
     if (!lt) return res.status(404).json({ success: false, message: "Leave type not found" });
+
+    if (!await canAccessStation(req, lt.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
     if (lt._count.requests > 0) {
       return res.status(409).json({ success: false, message: "Cannot delete: leave type has existing requests" });
     }
@@ -94,7 +103,6 @@ async function getLeaveBalances(req, res, next) {
     const { employeeId, year: qYear } = req.query;
     const year = parseInt(qYear, 10) || new Date().getFullYear();
 
-    // If the caller is an employee (not manager/admin), scope to self
     const callerEmployee = await prisma.employee.findUnique({ where: { userId: req.user.sub } });
     const scopedEmployeeId = employeeId || callerEmployee?.id;
 
@@ -104,6 +112,16 @@ async function getLeaveBalances(req, res, next) {
 
     const emp = await prisma.employee.findUnique({ where: { id: scopedEmployeeId } });
     if (!emp) return res.status(404).json({ success: false, message: "Employee not found" });
+
+    // Non-managers can only view their own balances
+    const isManager = ["Admin", "Manager", "LocationHead"].includes(req.user.activeRole);
+    if (!isManager && callerEmployee?.id !== scopedEmployeeId) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    if (!await canAccessStation(req, emp.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
 
     const balances = await prisma.leaveBalance.findMany({
       where: { employeeId: scopedEmployeeId, year },
@@ -129,11 +147,10 @@ async function getLeaveBalances(req, res, next) {
 
 async function listLeaveRequests(req, res, next) {
   try {
-    const { status, employeeId, stationId: qStation, page = "1", limit = "25" } = req.query;
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const { status, employeeId, page = "1", limit = "25" } = req.query;
+    const pageNum  = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 25));
 
-    // Employees can only see their own requests
     const callerEmployee = await prisma.employee.findUnique({ where: { userId: req.user.sub } });
     const isManager = ["Admin", "Manager", "LocationHead"].includes(req.user.activeRole);
 
@@ -141,11 +158,16 @@ async function listLeaveRequests(req, res, next) {
     if (status) where.status = status;
 
     if (!isManager && callerEmployee) {
+      // Employees see only their own requests
       where.employeeId = callerEmployee.id;
     } else if (employeeId) {
       where.employeeId = employeeId;
-    } else if (qStation) {
-      where.employee = { stationId: qStation };
+    } else {
+      // Managers are scoped to their station's employees
+      const stationId = await resolveStation(req);
+      if (stationId) {
+        where.employee = { stationId };
+      }
     }
 
     const [requests, total] = await prisma.$transaction([
@@ -162,11 +184,7 @@ async function listLeaveRequests(req, res, next) {
       prisma.leaveRequest.count({ where }),
     ]);
 
-    res.json({
-      success: true,
-      data: requests,
-      meta: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
-    });
+    res.json({ success: true, data: requests, meta: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) } });
   } catch (err) {
     next(err);
   }
@@ -189,12 +207,12 @@ async function submitLeaveRequest(req, res, next) {
     }
 
     const start = new Date(startDate);
-    const end = new Date(endDate);
+    const end   = new Date(endDate);
     if (end < start) {
       return res.status(422).json({ success: false, message: "endDate must be on or after startDate" });
     }
 
-    // Calculate business days (simple: calendar days excluding weekends)
+    // Count business days (excluding weekends)
     let days = 0;
     const cursor = new Date(start);
     while (cursor <= end) {
@@ -208,12 +226,10 @@ async function submitLeaveRequest(req, res, next) {
       return res.status(404).json({ success: false, message: "Leave type not found or inactive" });
     }
 
-    // Check balance
     const year = start.getFullYear();
     const balance = await prisma.leaveBalance.findUnique({
       where: { employeeId_leaveTypeId_year: { employeeId: callerEmployee.id, leaveTypeId, year } },
     });
-
     if (!balance) {
       return res.status(409).json({ success: false, message: `No ${leaveType.name} balance found for ${year}` });
     }
@@ -226,14 +242,11 @@ async function submitLeaveRequest(req, res, next) {
       });
     }
 
-    // Check for overlapping approved/pending requests
     const overlap = await prisma.leaveRequest.findFirst({
       where: {
         employeeId: callerEmployee.id,
         status: { in: ["Pending", "Approved"] },
-        OR: [
-          { startDate: { lte: end }, endDate: { gte: start } },
-        ],
+        OR: [{ startDate: { lte: end }, endDate: { gte: start } }],
       },
     });
     if (overlap) {
@@ -242,15 +255,7 @@ async function submitLeaveRequest(req, res, next) {
 
     const [request] = await prisma.$transaction([
       prisma.leaveRequest.create({
-        data: {
-          employeeId: callerEmployee.id,
-          leaveTypeId,
-          startDate: start,
-          endDate: end,
-          days,
-          reason: reason || null,
-          status: "Pending",
-        },
+        data: { employeeId: callerEmployee.id, leaveTypeId, startDate: start, endDate: end, days, reason: reason || null, status: "Pending" },
         include: { leaveType: { select: { id: true, name: true, isPaid: true } } },
       }),
       prisma.leaveBalance.update({
@@ -267,35 +272,52 @@ async function submitLeaveRequest(req, res, next) {
 
 async function getLeaveRequest(req, res, next) {
   try {
-    const req_ = await prisma.leaveRequest.findUnique({
+    const request = await prisma.leaveRequest.findUnique({
       where: { id: req.params.id },
       include: {
         employee: { include: { user: { select: { id: true, name: true, email: true, phone: true } } } },
         leaveType: true,
       },
     });
-    if (!req_) return res.status(404).json({ success: false, message: "Leave request not found" });
-    res.json({ success: true, data: req_ });
+    if (!request) return res.status(404).json({ success: false, message: "Leave request not found" });
+
+    // Employees can only see their own requests
+    const callerEmployee = await prisma.employee.findUnique({ where: { userId: req.user.sub } });
+    const isManager = ["Admin", "Manager", "LocationHead"].includes(req.user.activeRole);
+
+    if (!isManager && request.employeeId !== callerEmployee?.id) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+    if (isManager && !await canAccessStation(req, request.employee.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    res.json({ success: true, data: request });
   } catch (err) {
     next(err);
   }
 }
 
-// ── PUT /hr/leaves/:id/approve — approve or reject ────────────────────────────
-
 async function approveLeaveRequest(req, res, next) {
   try {
     const { id } = req.params;
-    const { action, note } = req.body; // action: "approve" | "reject"
+    const { action, note } = req.body;
 
     if (!["approve", "reject"].includes(action)) {
       return res.status(422).json({ success: false, message: "action must be 'approve' or 'reject'" });
     }
 
-    const request = await prisma.leaveRequest.findUnique({ where: { id } });
+    const request = await prisma.leaveRequest.findUnique({
+      where: { id },
+      include: { employee: true },
+    });
     if (!request) return res.status(404).json({ success: false, message: "Leave request not found" });
     if (request.status !== "Pending") {
       return res.status(409).json({ success: false, message: `Request is already ${request.status.toLowerCase()}` });
+    }
+
+    if (!await canAccessStation(req, request.employee.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
     }
 
     const newStatus = action === "approve" ? "Approved" : "Rejected";
@@ -306,24 +328,13 @@ async function approveLeaveRequest(req, res, next) {
         where: { id },
         data: { status: newStatus, approvedBy: req.user.sub, approvedAt: new Date(), note: note || null },
       }),
+      prisma.leaveBalance.update({
+        where: { employeeId_leaveTypeId_year: { employeeId: request.employeeId, leaveTypeId: request.leaveTypeId, year } },
+        data: action === "approve"
+          ? { used: { increment: request.days }, pending: { decrement: request.days } }
+          : { pending: { decrement: request.days } },
+      }),
     ];
-
-    if (action === "approve") {
-      ops.push(
-        prisma.leaveBalance.update({
-          where: { employeeId_leaveTypeId_year: { employeeId: request.employeeId, leaveTypeId: request.leaveTypeId, year } },
-          data: { used: { increment: request.days }, pending: { decrement: request.days } },
-        })
-      );
-    } else {
-      // Rejected — release the pending days
-      ops.push(
-        prisma.leaveBalance.update({
-          where: { employeeId_leaveTypeId_year: { employeeId: request.employeeId, leaveTypeId: request.leaveTypeId, year } },
-          data: { pending: { decrement: request.days } },
-        })
-      );
-    }
 
     const [updated] = await prisma.$transaction(ops);
     res.json({ success: true, message: `Leave request ${newStatus.toLowerCase()}`, data: updated });
@@ -332,22 +343,24 @@ async function approveLeaveRequest(req, res, next) {
   }
 }
 
-// ── PUT /hr/leaves/:id/cancel ────────────────────────────────────────────────
-
 async function cancelLeaveRequest(req, res, next) {
   try {
     const { id } = req.params;
-    const request = await prisma.leaveRequest.findUnique({ where: { id } });
+    const request = await prisma.leaveRequest.findUnique({
+      where: { id },
+      include: { employee: true },
+    });
     if (!request) return res.status(404).json({ success: false, message: "Leave request not found" });
 
-    // Employees can only cancel their own pending requests
     const callerEmployee = await prisma.employee.findUnique({ where: { userId: req.user.sub } });
     const isManager = ["Admin", "Manager", "LocationHead"].includes(req.user.activeRole);
 
     if (!isManager && request.employeeId !== callerEmployee?.id) {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
-
+    if (isManager && !await canAccessStation(req, request.employee.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
     if (!["Pending", "Approved"].includes(request.status)) {
       return res.status(409).json({ success: false, message: `Cannot cancel a ${request.status.toLowerCase()} request` });
     }
@@ -359,9 +372,7 @@ async function cancelLeaveRequest(req, res, next) {
       prisma.leaveRequest.update({ where: { id }, data: { status: "Cancelled" } }),
       prisma.leaveBalance.update({
         where: { employeeId_leaveTypeId_year: { employeeId: request.employeeId, leaveTypeId: request.leaveTypeId, year } },
-        data: wasApproved
-          ? { used: { decrement: request.days } }
-          : { pending: { decrement: request.days } },
+        data: wasApproved ? { used: { decrement: request.days } } : { pending: { decrement: request.days } },
       }),
     ]);
 

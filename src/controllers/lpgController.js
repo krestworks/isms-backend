@@ -6,11 +6,12 @@ const prisma = new PrismaClient();
 
 async function resolveStation(req) {
   const hasSV = await permissionService.hasPermission(req.user.sub, "global", "stations.view");
-  if (hasSV) return req.headers["x-station-id"] || null;
+  if (hasSV) {
+    const h = req.headers["x-station-id"];
+    return h && h !== "global" ? h : null;
+  }
   const user = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { homeLocation: true } });
-  if (!user?.homeLocation) return null;
-  const st = await prisma.station.findFirst({ where: { name: user.homeLocation, deletedAt: null } });
-  return st?.id || null;
+  return user?.homeLocation ?? null;
 }
 
 const toISO = (d) => d ? new Date(d + "T00:00:00.000Z") : null;

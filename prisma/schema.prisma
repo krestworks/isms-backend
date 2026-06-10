@@ -207,6 +207,8 @@ model Employee {
   leaveBalances       LeaveBalance[]
   shiftAssignments    ShiftAssignment[]
   disciplinaryRecords DisciplinaryRecord[]
+  payrolls            Payroll[]
+  performanceTasks    PerformanceTask[]
 }
 
 // ── Shifts & Attendance ───────────────────────────────────────────────────────
@@ -313,13 +315,70 @@ model LeaveRequest {
 // ── Disciplinary ──────────────────────────────────────────────────────────────
 
 model DisciplinaryRecord {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   employeeId  String
-  type        String
-  description String   @db.Text
+  category    String    @default("Misconduct")
+  offence     String?   @db.Text
+  description String    @db.Text
   date        DateTime
+  reportedBy  String?
+  stage       String    @default("Informal Action")
+  outcome     String?
+  hearingDate DateTime?
+  appeal      String?   @db.Text
+  notes       String?   @db.Text
   recordedBy  String
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+// ── Payroll ────────────────────────────────────────────────────────────────────
+
+model Payroll {
+  id                 String   @id @default(cuid())
+  stationId          String
+  employeeId         String
+  month              String
+  basicSalary        Float    @default(0)
+  houseAllowance     Float    @default(0)
+  transportAllowance Float    @default(0)
+  overtimePay        Float    @default(0)
+  grossPay           Float    @default(0)
+  nhif               Float    @default(0)
+  nssf               Float    @default(0)
+  paye               Float    @default(0)
+  otherDeductions    Float    @default(0)
+  totalDeductions    Float    @default(0)
+  netPay             Float    @default(0)
+  status             String   @default("pending")
+  payDate            String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, month])
+}
+
+// ── Performance Tasks ─────────────────────────────────────────────────────────
+
+model PerformanceTask {
+  id          String    @id @default(cuid())
+  stationId   String
+  employeeId  String
+  title       String
+  category    String    @default("General")
+  dueDate     String?
+  status      String    @default("todo")
+  priority    String    @default("medium")
+  notes       String?   @db.Text
+  rating      Int?
+  assignedBy  String?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 }
@@ -933,26 +992,31 @@ model BizPurchaseOrder {
 }
 
 model BizSale {
-  id            String   @id @default(cuid())
-  businessId    String
-  saleRef       String
-  date          String
-  items         String   @db.LongText // JSON [{productId,name,qty,unitPrice,discount,totalPrice}]
-  subtotal      Float    @default(0)
-  discount      Float    @default(0)
-  taxRate       Float    @default(0)
-  taxAmount     Float    @default(0)
-  totalAmount   Float    @default(0)
-  paymentMethod String   @default("Cash")
-  amountPaid    Float    @default(0)
-  change        Float    @default(0)
-  cashier       String?
-  tableId       String?
-  tableNo       String?
-  notes         String?
-  status        String   @default("paid") // paid | unpaid | void | refunded
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  businessId         String
+  saleRef            String
+  date               String
+  items              String   @db.LongText // JSON [{productId,name,qty,unitPrice,discount,totalPrice}]
+  subtotal           Float    @default(0)
+  discount           Float    @default(0)
+  taxRate            Float    @default(0)
+  taxAmount          Float    @default(0)
+  totalAmount        Float    @default(0)
+  paymentMethod      String   @default("Cash")
+  amountPaid         Float    @default(0)
+  change             Float    @default(0)
+  cashier            String?
+  tableId            String?
+  tableNo            String?
+  notes              String?
+  status             String   @default("paid") // paid | pending_payment | void | refunded
+  // Pesapal gateway fields (M-Pesa / Card)
+  pesapalTrackingId  String?
+  pesapalStatus      String?  // pending | Completed | Failed | Invalid | Reversed
+  customerPhone      String?
+  pesapalRedirectUrl String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }
 
 model BizStockMovement {

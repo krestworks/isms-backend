@@ -1,20 +1,15 @@
 "use strict";
 const prisma = require("../config/prisma");
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function stationScope(req) {
-  return req.headers["x-station-id"] || req.query.stationId || "global";
-}
+const { resolveStation, canAccessStation } = require("../middleware/station");
 
 // ── Departments ───────────────────────────────────────────────────────────────
 
 async function listDepartments(req, res, next) {
   try {
-    const stationId = stationScope(req);
-    const where = stationId === "global"
-      ? {}
-      : { OR: [{ stationId }, { stationId: "global" }] };
+    const stationId = await resolveStation(req);
+    const where = stationId
+      ? { OR: [{ stationId }, { stationId: "global" }] }
+      : {};
 
     const departments = await prisma.department.findMany({
       where,
@@ -33,12 +28,19 @@ async function listDepartments(req, res, next) {
 
 async function createDepartment(req, res, next) {
   try {
+    const stationId = await resolveStation(req);
+    if (!stationId) {
+      return res.status(422).json({ success: false, message: "Station context required" });
+    }
+
     const { name, description, parentId } = req.body;
-    const stationId = stationScope(req);
 
     if (parentId) {
       const parent = await prisma.department.findUnique({ where: { id: parentId } });
       if (!parent) return res.status(404).json({ success: false, message: "Parent department not found" });
+      if (!await canAccessStation(req, parent.stationId)) {
+        return res.status(403).json({ success: false, message: "Access denied" });
+      }
     }
 
     const dept = await prisma.department.create({
@@ -49,7 +51,7 @@ async function createDepartment(req, res, next) {
     res.status(201).json({ success: true, message: "Department created", data: dept });
   } catch (err) {
     if (err.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A department with this name already exists for this scope" });
+      return res.status(409).json({ success: false, message: "A department with this name already exists for this station" });
     }
     next(err);
   }
@@ -67,6 +69,11 @@ async function getDepartment(req, res, next) {
       },
     });
     if (!dept) return res.status(404).json({ success: false, message: "Department not found" });
+
+    if (!await canAccessStation(req, dept.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
     res.json({ success: true, data: dept });
   } catch (err) {
     next(err);
@@ -81,7 +88,9 @@ async function updateDepartment(req, res, next) {
     const dept = await prisma.department.findUnique({ where: { id } });
     if (!dept) return res.status(404).json({ success: false, message: "Department not found" });
 
-    // Prevent circular hierarchy
+    if (!await canAccessStation(req, dept.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
     if (parentId && parentId === id) {
       return res.status(422).json({ success: false, message: "A department cannot be its own parent" });
     }
@@ -99,7 +108,7 @@ async function updateDepartment(req, res, next) {
     res.json({ success: true, message: "Department updated", data: updated });
   } catch (err) {
     if (err.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A department with this name already exists for this scope" });
+      return res.status(409).json({ success: false, message: "A department with this name already exists for this station" });
     }
     next(err);
   }
@@ -112,6 +121,10 @@ async function deleteDepartment(req, res, next) {
       include: { _count: { select: { children: true, employees: true } } },
     });
     if (!dept) return res.status(404).json({ success: false, message: "Department not found" });
+
+    if (!await canAccessStation(req, dept.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
     if (dept._count.children > 0 || dept._count.employees > 0) {
       return res.status(409).json({ success: false, message: "Cannot delete: department has sub-departments or employees" });
     }
@@ -127,11 +140,12 @@ async function deleteDepartment(req, res, next) {
 
 async function listJobTitles(req, res, next) {
   try {
-    const stationId = stationScope(req);
+    const stationId = await resolveStation(req);
     const { departmentId } = req.query;
+
     const where = {
       ...(departmentId ? { departmentId } : {}),
-      ...(stationId === "global" ? {} : { OR: [{ stationId }, { stationId: "global" }] }),
+      ...(stationId ? { OR: [{ stationId }, { stationId: "global" }] } : {}),
     };
 
     const titles = await prisma.jobTitle.findMany({
@@ -151,12 +165,19 @@ async function listJobTitles(req, res, next) {
 
 async function createJobTitle(req, res, next) {
   try {
+    const stationId = await resolveStation(req);
+    if (!stationId) {
+      return res.status(422).json({ success: false, message: "Station context required" });
+    }
+
     const { title, description, departmentId, grade } = req.body;
-    const stationId = stationScope(req);
 
     if (departmentId) {
       const dept = await prisma.department.findUnique({ where: { id: departmentId } });
       if (!dept) return res.status(404).json({ success: false, message: "Department not found" });
+      if (!await canAccessStation(req, dept.stationId)) {
+        return res.status(403).json({ success: false, message: "Access denied" });
+      }
     }
 
     const jt = await prisma.jobTitle.create({
@@ -167,7 +188,7 @@ async function createJobTitle(req, res, next) {
     res.status(201).json({ success: true, message: "Job title created", data: jt });
   } catch (err) {
     if (err.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A job title with this name already exists for this scope" });
+      return res.status(409).json({ success: false, message: "A job title with this name already exists for this station" });
     }
     next(err);
   }
@@ -183,6 +204,11 @@ async function getJobTitle(req, res, next) {
       },
     });
     if (!jt) return res.status(404).json({ success: false, message: "Job title not found" });
+
+    if (!await canAccessStation(req, jt.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
     res.json({ success: true, data: jt });
   } catch (err) {
     next(err);
@@ -191,10 +217,14 @@ async function getJobTitle(req, res, next) {
 
 async function updateJobTitle(req, res, next) {
   try {
-    const { title, description, departmentId, grade } = req.body;
     const jt = await prisma.jobTitle.findUnique({ where: { id: req.params.id } });
     if (!jt) return res.status(404).json({ success: false, message: "Job title not found" });
 
+    if (!await canAccessStation(req, jt.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const { title, description, departmentId, grade } = req.body;
     const updated = await prisma.jobTitle.update({
       where: { id: req.params.id },
       data: {
@@ -209,7 +239,7 @@ async function updateJobTitle(req, res, next) {
     res.json({ success: true, message: "Job title updated", data: updated });
   } catch (err) {
     if (err.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A job title with this name already exists for this scope" });
+      return res.status(409).json({ success: false, message: "A job title with this name already exists for this station" });
     }
     next(err);
   }
@@ -222,6 +252,10 @@ async function deleteJobTitle(req, res, next) {
       include: { _count: { select: { employees: true } } },
     });
     if (!jt) return res.status(404).json({ success: false, message: "Job title not found" });
+
+    if (!await canAccessStation(req, jt.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
     if (jt._count.employees > 0) {
       return res.status(409).json({ success: false, message: "Cannot delete: job title is assigned to employees" });
     }
@@ -234,19 +268,15 @@ async function deleteJobTitle(req, res, next) {
 }
 
 // ── Org chart ─────────────────────────────────────────────────────────────────
-// Returns a tree structure rooted at top-level departments
 
 async function getOrgChart(req, res, next) {
   try {
-    const stationId = stationScope(req);
-    const where = stationId === "global"
-      ? { parentId: null }
-      : { parentId: null, OR: [{ stationId }, { stationId: "global" }] };
+    const stationId = await resolveStation(req);
 
-    async function buildTree(parentId, scopeStationId) {
+    async function buildTree(parentId) {
       const filter = {
         parentId,
-        ...(scopeStationId === "global" ? {} : { OR: [{ stationId: scopeStationId }, { stationId: "global" }] }),
+        ...(stationId ? { OR: [{ stationId }, { stationId: "global" }] } : {}),
       };
       const nodes = await prisma.department.findMany({
         where: filter,
@@ -256,13 +286,10 @@ async function getOrgChart(req, res, next) {
         },
         orderBy: { name: "asc" },
       });
-      return Promise.all(nodes.map(async (n) => ({
-        ...n,
-        children: await buildTree(n.id, scopeStationId),
-      })));
+      return Promise.all(nodes.map(async n => ({ ...n, children: await buildTree(n.id) })));
     }
 
-    const tree = await buildTree(null, stationId);
+    const tree = await buildTree(null);
     res.json({ success: true, data: tree });
   } catch (err) {
     next(err);
@@ -277,13 +304,16 @@ async function getStationModules(req, res, next) {
   try {
     const { stationId } = req.params;
 
+    if (!await canAccessStation(req, stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
     const station = await prisma.station.findUnique({ where: { id: stationId } });
     if (!station) return res.status(404).json({ success: false, message: "Station not found" });
 
     const existing = await prisma.stationModule.findMany({ where: { stationId } });
     const moduleMap = Object.fromEntries(existing.map(m => [m.module, m]));
 
-    // Return all modules — fill in defaults for any not yet configured
     const data = ALL_MODULES.map(mod => ({
       module: mod,
       isEnabled: moduleMap[mod]?.isEnabled ?? mod === "hr",
@@ -299,11 +329,15 @@ async function getStationModules(req, res, next) {
 async function updateStationModules(req, res, next) {
   try {
     const { stationId } = req.params;
-    const { modules } = req.body; // { hr: true, fuel: true, lpg: false, ... }
+
+    if (!await canAccessStation(req, stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
 
     const station = await prisma.station.findUnique({ where: { id: stationId } });
     if (!station) return res.status(404).json({ success: false, message: "Station not found" });
 
+    const { modules } = req.body;
     if (!modules || typeof modules !== "object") {
       return res.status(422).json({ success: false, message: "modules must be an object mapping module names to booleans" });
     }
@@ -312,10 +346,8 @@ async function updateStationModules(req, res, next) {
     if (invalidKeys.length > 0) {
       return res.status(422).json({ success: false, message: `Unknown modules: ${invalidKeys.join(", ")}` });
     }
-
-    // HR cannot be disabled
     if (modules.hr === false) {
-      return res.status(422).json({ success: false, message: "The HR module cannot be disabled — it is required for all stations" });
+      return res.status(422).json({ success: false, message: "The HR module cannot be disabled" });
     }
 
     for (const [mod, isEnabled] of Object.entries(modules)) {

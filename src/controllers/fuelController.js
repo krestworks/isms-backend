@@ -22,9 +22,7 @@ async function resolveStation(req) {
 
   // Non-admin: always use their homeLocation station
   const user = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { homeLocation: true } });
-  if (!user?.homeLocation) return null;
-  const station = await prisma.station.findFirst({ where: { name: user.homeLocation, deletedAt: null } });
-  return station?.id ?? null;
+  return user?.homeLocation ?? null;
 }
 
 function toISODay(dateStr) {

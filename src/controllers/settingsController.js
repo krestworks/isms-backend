@@ -1,20 +1,18 @@
 "use strict";
 const prisma = require("../config/prisma");
+const { hasPermission } = require("../services/permissionService");
 
 const ok  = (res, data, status = 200) => res.status(status).json({ success: true,  data });
 const err = (res, msg, status = 500) => res.status(status).json({ success: false, error: msg });
 
 async function resolveStation(req) {
-  const sid = req.headers["x-station-id"];
-  if (sid) return sid;
-  const user = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { homeLocation: true } });
-  if (user?.homeLocation) {
-    const st = await prisma.station.findFirst({ where: { name: user.homeLocation } });
-    if (st) return st.id;
+  const isAdmin = await hasPermission(req.user.sub, "global", "stations.view");
+  if (isAdmin) {
+    const h = req.headers["x-station-id"];
+    return h && h !== "global" ? h : null;
   }
-  const st = await prisma.station.findFirst({ orderBy: { name: "asc" } });
-  if (!st) throw new Error("No station found");
-  return st.id;
+  const user = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { homeLocation: true } });
+  return user?.homeLocation ?? null;
 }
 
 // ── Station Config (key-value JSON blobs per section) ─────────────────────────

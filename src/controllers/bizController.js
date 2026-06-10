@@ -1,6 +1,7 @@
 "use strict";
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
+const pesapal = require("../services/pesapalService");
 
 const today = () => new Date().toISOString().split("T")[0];
 const saleRef  = () => "BS-"  + Date.now().toString(36).toUpperCase();
@@ -8,22 +9,14 @@ const orderRef = () => "PO-"  + Date.now().toString(36).toUpperCase();
 const kitRef   = () => "KO-"  + Date.now().toString(36).toUpperCase();
 
 async function resolveStation(req) {
-  // Header always wins — it comes from the authenticated session UI
-  const sid = req.headers["x-station-id"];
-  if (sid) return sid;
-
-  // Fall back to homeLocation
-  const userId = req.user.sub;
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { homeLocation: true } });
-  if (user?.homeLocation) {
-    const st = await prisma.station.findFirst({ where: { name: user.homeLocation } });
-    if (st) return st.id;
+  const { hasPermission } = require("../services/permissionService");
+  const isAdmin = await hasPermission(req.user.sub, "global", "stations.view");
+  if (isAdmin) {
+    const h = req.headers["x-station-id"];
+    return h && h !== "global" ? h : null;
   }
-
-  // Last resort: first available station (super-admin with no homeLocation set)
-  const st = await prisma.station.findFirst({ orderBy: { name: "asc" } });
-  if (!st) throw new Error("No station found in system");
-  return st.id;
+  const user = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { homeLocation: true } });
+  return user?.homeLocation ?? null;
 }
 
 const ok  = (res, data, status = 200) => res.status(status).json({ success: true,  data });
@@ -607,13 +600,270 @@ function safeJson(v, fallback) {
   catch { return fallback; }
 }
 
+// Deduct stock for a completed sale — shared by createSale and payment confirmation
+async function deductStock(sale, items) {
+  const ops = [];
+  for (const item of items) {
+    if (!item.productId) continue;
+    const product = await prisma.bizProduct.findUnique({ where: { id: item.productId } });
+    if (!product) continue;
+    const before = product.stockQty;
+    const after  = before - item.qty;
+    ops.push(
+      prisma.bizProduct.update({ where: { id: item.productId }, data: { stockQty: after } }),
+      prisma.bizStockMovement.create({
+        data: {
+          businessId: sale.businessId, productId: item.productId,
+          productName: item.name ?? product.name,
+          type: "sale_out", qty: item.qty, before, after,
+          reference: sale.saleRef, date: today(),
+        },
+      }),
+    );
+  }
+  return ops;
+}
+
+// ── Products — barcode/SKU lookup ─────────────────────────────────────────────
+
+async function getProductByBarcode(req, res) {
+  try {
+    const { code } = req.params;
+    const { businessId } = req.query;
+    if (!businessId) return err(res, "businessId required", 400);
+
+    const product = await prisma.bizProduct.findFirst({
+      where: {
+        businessId,
+        OR: [{ barcode: code }, { sku: code }],
+      },
+    });
+
+    if (!product) return err(res, "Product not found", 404);
+    ok(res, product);
+  } catch (e) { err(res, e.message); }
+}
+
+// ── Payments — Pesapal (M-Pesa / Card) ───────────────────────────────────────
+
+/**
+ * POST /biz/payments/initiate
+ * Creates a pending BizSale and submits it to Pesapal.
+ * Returns { saleId, saleRef, trackingId, redirectUrl, amount }.
+ */
+async function initiatePayment(req, res) {
+  try {
+    const {
+      items, businessId, discount = 0,
+      paymentMethod, customerPhone,
+      cashier, tableId, tableNo, notes,
+    } = req.body;
+
+    if (!businessId || !items?.length) return err(res, "businessId and items required", 400);
+    if (!["M-Pesa", "Card"].includes(paymentMethod)) {
+      return err(res, "initiatePayment only supports M-Pesa and Card", 400);
+    }
+    if (paymentMethod === "M-Pesa" && !customerPhone) {
+      return err(res, "customerPhone is required for M-Pesa payments", 400);
+    }
+
+    const business = await prisma.bizBusiness.findUnique({ where: { id: businessId } });
+    const taxRate  = business?.taxRate ?? 0;
+
+    const subtotal    = items.reduce((s, i) => s + (i.totalPrice ?? i.qty * i.unitPrice), 0);
+    const taxAmount   = Math.round(subtotal * taxRate / 100 * 100) / 100;
+    const totalAmount = Math.max(0, subtotal - discount + taxAmount);
+
+    const ref = saleRef();
+
+    // Create a pending sale (stock NOT deducted yet — deducted on confirmation)
+    const sale = await prisma.bizSale.create({
+      data: {
+        businessId, saleRef: ref, date: today(),
+        items: JSON.stringify(items), subtotal, discount, taxRate, taxAmount, totalAmount,
+        paymentMethod, amountPaid: 0, change: 0,
+        cashier: cashier || null, tableId: tableId || null, tableNo: tableNo || null,
+        notes: notes || null,
+        status: "pending_payment",
+        customerPhone: customerPhone || null,
+        pesapalStatus: "pending",
+      },
+    });
+
+    // Submit order to Pesapal
+    let pesapalResult;
+    try {
+      pesapalResult = await pesapal.submitOrder({
+        merchantRef: ref,
+        amount: totalAmount,
+        currency: business?.currency || "KES",
+        description: `${business?.name || "POS"} — ${ref}`,
+        phone: customerPhone || undefined,
+      });
+    } catch (pesapalErr) {
+      // Roll back the pending sale if Pesapal rejects
+      await prisma.bizSale.delete({ where: { id: sale.id } });
+      return err(res, `Pesapal error: ${pesapalErr.message}`, 502);
+    }
+
+    if (!pesapalResult?.order_tracking_id) {
+      await prisma.bizSale.delete({ where: { id: sale.id } });
+      return err(res, "Pesapal did not return a tracking ID", 502);
+    }
+
+    // Persist Pesapal tracking data
+    await prisma.bizSale.update({
+      where: { id: sale.id },
+      data: {
+        pesapalTrackingId: pesapalResult.order_tracking_id,
+        pesapalRedirectUrl: pesapalResult.redirect_url || null,
+      },
+    });
+
+    ok(res, {
+      saleId:      sale.id,
+      saleRef:     ref,
+      trackingId:  pesapalResult.order_tracking_id,
+      redirectUrl: pesapalResult.redirect_url,
+      amount:      totalAmount,
+    }, 201);
+  } catch (e) { err(res, e.message); }
+}
+
+/**
+ * GET /biz/payments/:trackingId/status
+ * Polls Pesapal for payment status. On Completed: deducts stock and marks sale paid.
+ * Returns { status: "Completed"|"Pending"|"Failed"|"Invalid"|"Reversed", sale? }
+ */
+async function checkPaymentStatus(req, res) {
+  try {
+    const { trackingId } = req.params;
+
+    const sale = await prisma.bizSale.findFirst({
+      where: { pesapalTrackingId: trackingId },
+    });
+    if (!sale) return err(res, "Payment not found", 404);
+
+    // If already finalised, return immediately from DB
+    if (sale.status === "paid") {
+      return ok(res, { status: "Completed", sale: { ...sale, items: safeJson(sale.items, []) } });
+    }
+    if (sale.status === "void") {
+      return ok(res, { status: "Cancelled", sale: null });
+    }
+
+    // Ask Pesapal for latest status
+    let statusRes;
+    try {
+      statusRes = await pesapal.getTransactionStatus(trackingId);
+    } catch (e) {
+      return ok(res, { status: "Pending", sale: null });
+    }
+
+    const code = statusRes.status_code;
+
+    if (pesapal.isCompleted(code)) {
+      const items = safeJson(sale.items, []);
+      const stockOps = await deductStock(sale, items);
+
+      const [updatedSale] = await prisma.$transaction([
+        prisma.bizSale.update({
+          where: { id: sale.id },
+          data: {
+            status: "paid",
+            amountPaid: statusRes.amount || sale.totalAmount,
+            pesapalStatus: "Completed",
+          },
+        }),
+        ...stockOps,
+      ]);
+
+      return ok(res, { status: "Completed", sale: { ...updatedSale, items } });
+    }
+
+    if (pesapal.isFailed(code)) {
+      const statusStr = pesapal.statusCodeToString(code);
+      await prisma.bizSale.update({ where: { id: sale.id }, data: { pesapalStatus: statusStr } });
+      return ok(res, { status: statusStr, sale: null });
+    }
+
+    // Still pending
+    return ok(res, { status: "Pending", sale: null });
+  } catch (e) { err(res, e.message); }
+}
+
+/**
+ * POST /biz/payments/:saleId/cancel
+ * Cancels a pending_payment sale (no stock was ever deducted).
+ */
+async function cancelPayment(req, res) {
+  try {
+    const sale = await prisma.bizSale.findUnique({ where: { id: req.params.saleId } });
+    if (!sale) return err(res, "Sale not found", 404);
+    if (sale.status !== "pending_payment") {
+      return err(res, "Only pending payments can be cancelled", 409);
+    }
+    await prisma.bizSale.update({
+      where: { id: sale.id },
+      data: { status: "void", pesapalStatus: "Cancelled" },
+    });
+    ok(res, { id: sale.id, status: "void" });
+  } catch (e) { err(res, e.message); }
+}
+
+/**
+ * POST /biz/payments/ipn   (NO authentication — Pesapal posts here)
+ * Instant Payment Notification handler.
+ */
+async function handleIPN(req, res) {
+  // Always respond 200 to Pesapal so it doesn't retry
+  res.status(200).json({ status: "ok" });
+
+  try {
+    const { OrderTrackingId } = req.body;
+    if (!OrderTrackingId) return;
+
+    let statusRes;
+    try {
+      statusRes = await pesapal.getTransactionStatus(OrderTrackingId);
+    } catch { return; }
+
+    const code = statusRes.status_code;
+    const sale = await prisma.bizSale.findFirst({
+      where: { pesapalTrackingId: OrderTrackingId },
+    });
+    if (!sale || sale.status === "paid") return;
+
+    if (pesapal.isCompleted(code)) {
+      const items    = safeJson(sale.items, []);
+      const stockOps = await deductStock(sale, items);
+      await prisma.$transaction([
+        prisma.bizSale.update({
+          where: { id: sale.id },
+          data: { status: "paid", amountPaid: statusRes.amount || sale.totalAmount, pesapalStatus: "Completed" },
+        }),
+        ...stockOps,
+      ]);
+    } else {
+      await prisma.bizSale.update({
+        where: { id: sale.id },
+        data: { pesapalStatus: pesapal.statusCodeToString(code) },
+      });
+    }
+  } catch (e) {
+    console.error("[IPN error]", e.message);
+  }
+}
+
 module.exports = {
   listBusinesses, getBusiness, createBusiness, updateBusiness, deleteBusiness,
   listCategories, createCategory, updateCategory, deleteCategory,
   listProducts, createProduct, updateProduct, deleteProduct, adjustStock, bulkUpdateStock,
+  getProductByBarcode,
   listSuppliers, createSupplier, updateSupplier, deleteSupplier,
   listPurchaseOrders, createPurchaseOrder, updatePurchaseOrder, receivePurchaseOrder, deletePurchaseOrder,
   listSales, createSale, voidSale,
+  initiatePayment, checkPaymentStatus, cancelPayment, handleIPN,
   listStockMovements,
   listExpenses, createExpense, updateExpense, deleteExpense,
   listTables, createTable, updateTable, deleteTable,

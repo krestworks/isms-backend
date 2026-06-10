@@ -1,11 +1,12 @@
 "use strict";
 const prisma = require("../config/prisma");
+const { resolveStation, canAccessStation } = require("../middleware/station");
 
 // ── Shift Patterns ────────────────────────────────────────────────────────────
 
 async function listShiftPatterns(req, res, next) {
   try {
-    const stationId = req.headers["x-station-id"] || req.query.stationId;
+    const stationId = await resolveStation(req);
     const where = stationId ? { stationId } : {};
 
     const patterns = await prisma.shiftPattern.findMany({
@@ -21,23 +22,21 @@ async function listShiftPatterns(req, res, next) {
 
 async function createShiftPattern(req, res, next) {
   try {
-    const { name, startTime, endTime, isDefault = false } = req.body;
-    const stationId = req.headers["x-station-id"] || req.body.stationId;
+    const stationId = await resolveStation(req);
+    if (!stationId) {
+      return res.status(422).json({ success: false, message: "Station context required" });
+    }
 
+    const { name, startTime, endTime, isDefault = false } = req.body;
     if (!name || !startTime || !endTime) {
       return res.status(422).json({ success: false, message: "name, startTime, and endTime are required" });
     }
-    if (!stationId) {
-      return res.status(422).json({ success: false, message: "x-station-id header or stationId body field is required" });
-    }
 
-    // Validate time format HH:mm
     const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
     if (!timeRe.test(startTime) || !timeRe.test(endTime)) {
       return res.status(422).json({ success: false, message: "startTime and endTime must be in HH:mm format" });
     }
 
-    // If marking as default, unset any previous default for this station
     if (isDefault) {
       await prisma.shiftPattern.updateMany({ where: { stationId, isDefault: true }, data: { isDefault: false } });
     }
@@ -57,18 +56,20 @@ async function createShiftPattern(req, res, next) {
 
 async function updateShiftPattern(req, res, next) {
   try {
-    const { name, startTime, endTime, isDefault } = req.body;
     const pattern = await prisma.shiftPattern.findUnique({ where: { id: req.params.id } });
     if (!pattern) return res.status(404).json({ success: false, message: "Shift pattern not found" });
 
-    if (startTime || endTime) {
-      const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
-      if (startTime && !timeRe.test(startTime)) {
-        return res.status(422).json({ success: false, message: "startTime must be in HH:mm format" });
-      }
-      if (endTime && !timeRe.test(endTime)) {
-        return res.status(422).json({ success: false, message: "endTime must be in HH:mm format" });
-      }
+    if (!await canAccessStation(req, pattern.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const { name, startTime, endTime, isDefault } = req.body;
+    const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
+    if (startTime && !timeRe.test(startTime)) {
+      return res.status(422).json({ success: false, message: "startTime must be in HH:mm format" });
+    }
+    if (endTime && !timeRe.test(endTime)) {
+      return res.status(422).json({ success: false, message: "endTime must be in HH:mm format" });
     }
 
     if (isDefault) {
@@ -81,9 +82,9 @@ async function updateShiftPattern(req, res, next) {
     const updated = await prisma.shiftPattern.update({
       where: { id: req.params.id },
       data: {
-        name: name ? name.trim() : undefined,
+        name:      name      ? name.trim() : undefined,
         startTime: startTime || undefined,
-        endTime: endTime || undefined,
+        endTime:   endTime   || undefined,
         isDefault: isDefault !== undefined ? Boolean(isDefault) : undefined,
       },
     });
@@ -104,6 +105,10 @@ async function deleteShiftPattern(req, res, next) {
       include: { _count: { select: { assignments: true } } },
     });
     if (!pattern) return res.status(404).json({ success: false, message: "Shift pattern not found" });
+
+    if (!await canAccessStation(req, pattern.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
     if (pattern._count.assignments > 0) {
       return res.status(409).json({ success: false, message: "Cannot delete: shift pattern has existing assignments" });
     }
@@ -119,18 +124,18 @@ async function deleteShiftPattern(req, res, next) {
 
 async function listShiftAssignments(req, res, next) {
   try {
-    const { employeeId, stationId: qStation, from, to, page = "1", limit = "25" } = req.query;
-    const stationId = req.headers["x-station-id"] || qStation;
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const stationId = await resolveStation(req);
+    const { employeeId, from, to, page = "1", limit = "25" } = req.query;
+    const pageNum  = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 25));
 
     const where = {};
     if (employeeId) where.employeeId = employeeId;
-    if (stationId) where.stationId = stationId;
+    if (stationId)  where.stationId  = stationId;
     if (from || to) {
       where.date = {};
       if (from) where.date.gte = new Date(from);
-      if (to) where.date.lte = new Date(to);
+      if (to)   where.date.lte = new Date(to);
     }
 
     const [assignments, total] = await prisma.$transaction([
@@ -155,9 +160,12 @@ async function listShiftAssignments(req, res, next) {
 
 async function assignShift(req, res, next) {
   try {
-    const { employeeId, shiftPatternId, date } = req.body;
-    const stationId = req.headers["x-station-id"] || req.body.stationId;
+    const stationId = await resolveStation(req);
+    if (!stationId) {
+      return res.status(422).json({ success: false, message: "Station context required" });
+    }
 
+    const { employeeId, shiftPatternId, date } = req.body;
     if (!employeeId || !shiftPatternId || !date) {
       return res.status(422).json({ success: false, message: "employeeId, shiftPatternId, and date are required" });
     }
@@ -167,19 +175,21 @@ async function assignShift(req, res, next) {
       prisma.shiftPattern.findUnique({ where: { id: shiftPatternId } }),
     ]);
 
-    if (!emp) return res.status(404).json({ success: false, message: "Employee not found" });
+    if (!emp)     return res.status(404).json({ success: false, message: "Employee not found" });
     if (!pattern) return res.status(404).json({ success: false, message: "Shift pattern not found" });
+
+    // Both the employee and the shift pattern must belong to the caller's station
+    if (emp.stationId !== stationId) {
+      return res.status(403).json({ success: false, message: "Employee does not belong to your station" });
+    }
+    if (pattern.stationId !== stationId) {
+      return res.status(403).json({ success: false, message: "Shift pattern does not belong to your station" });
+    }
 
     const assignment = await prisma.shiftAssignment.upsert({
       where: { employeeId_date: { employeeId, date: new Date(date) } },
-      update: { shiftPatternId, stationId: stationId || emp.stationId, createdBy: req.user.sub },
-      create: {
-        employeeId,
-        shiftPatternId,
-        date: new Date(date),
-        stationId: stationId || emp.stationId,
-        createdBy: req.user.sub,
-      },
+      update: { shiftPatternId, stationId, createdBy: req.user.sub },
+      create: { employeeId, shiftPatternId, date: new Date(date), stationId, createdBy: req.user.sub },
       include: {
         employee: { include: { user: { select: { id: true, name: true } } } },
         shiftPattern: { select: { id: true, name: true, startTime: true, endTime: true } },
@@ -196,12 +206,10 @@ async function assignShift(req, res, next) {
 
 async function listAttendance(req, res, next) {
   try {
-    const { employeeId, stationId: qStation, from, to, status, page = "1", limit = "25" } = req.query;
-    const stationId = req.headers["x-station-id"] || qStation;
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const { employeeId, from, to, status, page = "1", limit = "25" } = req.query;
+    const pageNum  = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 25));
 
-    // Employees scope to their own record
     const callerEmployee = await prisma.employee.findUnique({ where: { userId: req.user.sub } });
     const isManager = ["Admin", "Manager", "LocationHead"].includes(req.user.activeRole);
 
@@ -212,22 +220,22 @@ async function listAttendance(req, res, next) {
       where.employeeId = callerEmployee.id;
     } else if (employeeId) {
       where.employeeId = employeeId;
-    } else if (stationId) {
-      where.employee = { stationId };
+    } else {
+      // Managers are scoped to their station
+      const stationId = await resolveStation(req);
+      if (stationId) where.employee = { stationId };
     }
 
     if (from || to) {
       where.date = {};
       if (from) where.date.gte = new Date(from);
-      if (to) where.date.lte = new Date(to);
+      if (to)   where.date.lte = new Date(to);
     }
 
     const [records, total] = await prisma.$transaction([
       prisma.attendance.findMany({
         where,
-        include: {
-          employee: { include: { user: { select: { id: true, name: true } } } },
-        },
+        include: { employee: { include: { user: { select: { id: true, name: true } } } } },
         orderBy: { date: "desc" },
         skip: (pageNum - 1) * limitNum,
         take: limitNum,
@@ -254,7 +262,6 @@ async function checkIn(req, res, next) {
     const existing = await prisma.attendance.findUnique({
       where: { employeeId_date: { employeeId: callerEmployee.id, date: today } },
     });
-
     if (existing?.checkIn) {
       return res.status(409).json({ success: false, message: "You have already checked in today" });
     }
@@ -284,7 +291,6 @@ async function checkOut(req, res, next) {
     const existing = await prisma.attendance.findUnique({
       where: { employeeId_date: { employeeId: callerEmployee.id, date: today } },
     });
-
     if (!existing?.checkIn) {
       return res.status(409).json({ success: false, message: "You have not checked in today" });
     }
@@ -303,7 +309,6 @@ async function checkOut(req, res, next) {
   }
 }
 
-// Manual attendance entry/edit by manager
 async function upsertAttendance(req, res, next) {
   try {
     const { employeeId, date, checkIn, checkOut, status = "Present", note } = req.body;
@@ -320,30 +325,33 @@ async function upsertAttendance(req, res, next) {
     const emp = await prisma.employee.findUnique({ where: { id: employeeId } });
     if (!emp) return res.status(404).json({ success: false, message: "Employee not found" });
 
+    // Manager can only record attendance for employees at their own station
+    if (!await canAccessStation(req, emp.stationId)) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
     const dayDate = new Date(date);
     dayDate.setHours(0, 0, 0, 0);
 
     const record = await prisma.attendance.upsert({
       where: { employeeId_date: { employeeId, date: dayDate } },
       update: {
-        checkIn: checkIn ? new Date(checkIn) : undefined,
-        checkOut: checkOut ? new Date(checkOut) : undefined,
+        checkIn:    checkIn  ? new Date(checkIn)  : undefined,
+        checkOut:   checkOut ? new Date(checkOut) : undefined,
         status,
-        note: note || undefined,
+        note:       note || undefined,
         recordedBy: req.user.sub,
       },
       create: {
         employeeId,
         date: dayDate,
-        checkIn: checkIn ? new Date(checkIn) : null,
-        checkOut: checkOut ? new Date(checkOut) : null,
+        checkIn:    checkIn  ? new Date(checkIn)  : null,
+        checkOut:   checkOut ? new Date(checkOut) : null,
         status,
-        note: note || null,
+        note:       note || null,
         recordedBy: req.user.sub,
       },
-      include: {
-        employee: { include: { user: { select: { id: true, name: true } } } },
-      },
+      include: { employee: { include: { user: { select: { id: true, name: true } } } } },
     });
 
     res.json({ success: true, message: "Attendance record saved", data: record });

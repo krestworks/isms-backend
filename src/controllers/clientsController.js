@@ -1,21 +1,18 @@
 "use strict";
 const prisma = require("../config/prisma");
+const { hasPermission } = require("../services/permissionService");
 
-const ok  = (res, data, status = 200) => res.status(status).json({ success: true,  data });
+const ok  = (res, data, status = 200, meta) => res.status(status).json(meta ? { success: true, data, meta } : { success: true, data });
 const err = (res, msg, status = 500) => res.status(status).json({ success: false, error: msg });
 
 async function resolveStation(req) {
-  const sid = req.headers["x-station-id"];
-  if (sid) return sid;
-  const userId = req.user.sub;
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { homeLocation: true } });
-  if (user?.homeLocation) {
-    const st = await prisma.station.findFirst({ where: { name: user.homeLocation } });
-    if (st) return st.id;
+  const isAdmin = await hasPermission(req.user.sub, "global", "stations.view");
+  if (isAdmin) {
+    const h = req.headers["x-station-id"];
+    return h && h !== "global" ? h : null;
   }
-  const st = await prisma.station.findFirst({ orderBy: { name: "asc" } });
-  if (!st) throw new Error("No station found in system");
-  return st.id;
+  const user = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { homeLocation: true } });
+  return user?.homeLocation ?? null;
 }
 
 // ── Clients ───────────────────────────────────────────────────────────────────
@@ -122,4 +119,62 @@ async function deleteCoupon(req, res) {
   } catch (e) { err(res, e.message); }
 }
 
-module.exports = { listClients, createClient, updateClient, deleteClient, listCoupons, createCoupon, updateCoupon, deleteCoupon };
+// ── Client Orders ─────────────────────────────────────────────────────────────
+
+async function listOrders(req, res) {
+  try {
+    const stationId = await resolveStation(req);
+    const { status, module, clientId, page = "1", limit = "50" } = req.query;
+    const pageNum  = Math.max(1, parseInt(page,  10) || 1);
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    const where = { stationId };
+    if (status)   where.status   = status;
+    if (module)   where.module   = module;
+    if (clientId) where.clientId = clientId;
+    const [data, total] = await prisma.$transaction([
+      prisma.clientOrder.findMany({ where, orderBy: { createdAt: "desc" }, skip: (pageNum - 1) * limitNum, take: limitNum }),
+      prisma.clientOrder.count({ where }),
+    ]);
+    ok(res, data, 200, { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) });
+  } catch (e) { err(res, e.message); }
+}
+
+async function createOrder(req, res) {
+  try {
+    const stationId = await resolveStation(req);
+    const { clientId, clientName, module = "Fuel", description, amount = 0, paymentMethod = "Cash", status = "pending", orderDate, notes } = req.body;
+    if (!clientName)  return err(res, "clientName is required", 400);
+    if (!description) return err(res, "description is required", 400);
+    const orderRef = `ORD-${Date.now().toString(36).toUpperCase()}`;
+    const o = await prisma.clientOrder.create({
+      data: { stationId, clientId: clientId || null, clientName, orderRef, module, description, amount: parseFloat(amount), paymentMethod, status, orderDate: orderDate || new Date().toISOString().split("T")[0], notes: notes || null },
+    });
+    ok(res, o, 201);
+  } catch (e) { err(res, e.message); }
+}
+
+async function updateOrder(req, res) {
+  try {
+    const { clientName, module, description, amount, paymentMethod, status, orderDate, notes } = req.body;
+    const data = {};
+    if (clientName    !== undefined) data.clientName    = clientName;
+    if (module        !== undefined) data.module        = module;
+    if (description   !== undefined) data.description   = description;
+    if (amount        !== undefined) data.amount        = parseFloat(amount);
+    if (paymentMethod !== undefined) data.paymentMethod = paymentMethod;
+    if (status        !== undefined) data.status        = status;
+    if (orderDate     !== undefined) data.orderDate     = orderDate;
+    if (notes         !== undefined) data.notes         = notes;
+    const o = await prisma.clientOrder.update({ where: { id: req.params.id }, data });
+    ok(res, o);
+  } catch (e) { err(res, e.message); }
+}
+
+async function deleteOrder(req, res) {
+  try {
+    await prisma.clientOrder.delete({ where: { id: req.params.id } });
+    ok(res, { id: req.params.id });
+  } catch (e) { err(res, e.message); }
+}
+
+module.exports = { listClients, createClient, updateClient, deleteClient, listCoupons, createCoupon, updateCoupon, deleteCoupon, listOrders, createOrder, updateOrder, deleteOrder };

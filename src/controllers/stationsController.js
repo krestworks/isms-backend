@@ -20,13 +20,13 @@ async function listStations(req, res, next) {
     if (status)       where.status = status;
 
     if (!canViewAll) {
-      // Restrict to the user's home station only
+      // Restrict to the user's home station only (homeLocation stores the station ID)
       const user = await prisma.user.findUnique({
         where: { id: req.user.sub },
         select: { homeLocation: true },
       });
       if (user?.homeLocation) {
-        where.name = user.homeLocation;
+        where.id = user.homeLocation;
       } else {
         return res.json({ success: true, data: [] });
       }
@@ -84,6 +84,18 @@ async function getStation(req, res, next) {
     const station = await prisma.station.findUnique({ where: { id: req.params.id } });
     if (!station || station.deletedAt) {
       return res.status(404).json({ success: false, message: "Station not found" });
+    }
+
+    // Non-admins may only view their own home station
+    const canViewAll = await hasPermission(req.user.sub, "global", "stations.view");
+    if (!canViewAll) {
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.sub },
+        select: { homeLocation: true },
+      });
+      if (user?.homeLocation !== req.params.id) {
+        return res.status(403).json({ success: false, message: "Access denied" });
+      }
     }
 
     const staffCount = await prisma.userRole.count({ where: { stationId: req.params.id } });

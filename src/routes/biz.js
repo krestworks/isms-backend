@@ -4,6 +4,10 @@ const { authenticate } = require("../middleware/auth");
 const c = require("../controllers/bizController");
 
 const router = Router();
+
+// IPN webhook — Pesapal calls this with no auth token; must be registered before authenticate
+router.post("/payments/ipn", c.handleIPN);
+
 router.use(authenticate);
 
 // Businesses
@@ -20,6 +24,7 @@ router.put("/categories/:id",   c.updateCategory);
 router.delete("/categories/:id",c.deleteCategory);
 
 // Products
+router.get("/products/barcode/:code",  c.getProductByBarcode);   // barcode/SKU lookup (before /:id)
 router.get("/products",               c.listProducts);
 router.post("/products",              c.createProduct);
 router.put("/products/:id",           c.updateProduct);
@@ -44,6 +49,11 @@ router.delete("/purchase-orders/:id",       c.deletePurchaseOrder);
 router.get("/sales",            c.listSales);
 router.post("/sales",           c.createSale);
 router.post("/sales/:id/void",  c.voidSale);
+
+// Payments — Pesapal gateway
+router.post("/payments/initiate",                c.initiatePayment);
+router.get("/payments/:trackingId/status",       c.checkPaymentStatus);
+router.post("/payments/:saleId/cancel",          c.cancelPayment);
 
 // Stock Movements
 router.get("/stock-movements",  c.listStockMovements);

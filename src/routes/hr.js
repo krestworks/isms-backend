@@ -8,15 +8,35 @@ const {
   onboardEmployeeRules, validate,
 } = require("../utils/validators");
 
-const setup      = require("../controllers/hrSetupController");
-const employees  = require("../controllers/hrEmployeesController");
-const leaves     = require("../controllers/hrLeavesController");
-const attendance = require("../controllers/hrAttendanceController");
+const setup       = require("../controllers/hrSetupController");
+const employees   = require("../controllers/hrEmployeesController");
+const leaves      = require("../controllers/hrLeavesController");
+const attendance  = require("../controllers/hrAttendanceController");
+const self        = require("../controllers/hrSelfController");
+const payroll     = require("../controllers/hrPayrollController");
+const performance = require("../controllers/hrPerformanceController");
 
 const router = Router();
 
 // All HR routes require authentication
 router.use(authenticate);
+
+// ── Self-service routes (authenticate only — no requirePermission) ─────────────
+// Any authenticated user with an Employee record can access these.
+
+router.get   ("/self/me",                   self.getMe);
+router.get   ("/self/attendance",           self.getMyAttendance);
+router.post  ("/self/attendance/checkin",   self.checkIn);
+router.post  ("/self/attendance/checkout",  self.checkOut);
+router.get   ("/self/leaves/types",         self.getLeaveTypes);
+router.get   ("/self/leaves/balances",      self.getMyLeaveBalances);
+router.get   ("/self/leaves",               self.getMyLeaves);
+router.post  ("/self/leaves",               self.submitLeave);
+router.put   ("/self/leaves/:id/cancel",    self.cancelLeave);
+router.get   ("/self/shifts",               self.getMyShifts);
+router.get   ("/self/disciplinary",         self.getMyDisciplinary);
+router.get   ("/self/payroll",              self.getMyPayroll);
+router.get   ("/self/performance",          self.getMyPerformance);
 
 // ── Business Setup ────────────────────────────────────────────────────────────
 
@@ -47,9 +67,13 @@ router.get   ("/employees/:id",                  requirePermission("hr.staff.vie
 router.put   ("/employees/:id",                  requirePermission("hr.staff.edit"),      employees.updateEmployee);
 router.post  ("/employees/:id/terminate",        requirePermission("hr.staff.terminate"), employees.terminateEmployee);
 
-// Disciplinary
-router.get   ("/employees/:id/disciplinary",     requirePermission("hr.disciplinary.view"),   employees.listDisciplinaryRecords);
-router.post  ("/employees/:id/disciplinary",     requirePermission("hr.disciplinary.record"),  employees.createDisciplinaryRecord);
+// Disciplinary — station-level list
+router.get   ("/disciplinary",                         requirePermission("hr.disciplinary.view"),    employees.listAllDisciplinaryRecords);
+
+// Disciplinary — per-employee
+router.get   ("/employees/:id/disciplinary",           requirePermission("hr.disciplinary.view"),    employees.listDisciplinaryRecords);
+router.post  ("/employees/:id/disciplinary",           requirePermission("hr.disciplinary.record"),  employees.createDisciplinaryRecord);
+router.put   ("/employees/:id/disciplinary/:recordId", requirePermission("hr.disciplinary.record"),  employees.updateDisciplinaryRecord);
 
 // ── Leave Management ──────────────────────────────────────────────────────────
 
@@ -86,5 +110,19 @@ router.get   ("/attendance",             requirePermission("hr.attendance.view")
 router.post  ("/attendance/checkin",     requirePermission("hr.attendance.view"),    attendance.checkIn);
 router.post  ("/attendance/checkout",    requirePermission("hr.attendance.view"),    attendance.checkOut);
 router.post  ("/attendance/manual",      requirePermission("hr.attendance.record"),  attendance.upsertAttendance);
+
+// ── Payroll ───────────────────────────────────────────────────────────────────
+
+router.get   ("/payroll",       requirePermission("hr.payroll.view"),    payroll.listPayrolls);
+router.post  ("/payroll",       requirePermission("hr.payroll.process"), payroll.createPayroll);
+router.put   ("/payroll/:id",   requirePermission("hr.payroll.process"), payroll.updatePayroll);
+router.delete("/payroll/:id",   requirePermission("hr.payroll.process"), payroll.deletePayroll);
+
+// ── Performance Tasks ─────────────────────────────────────────────────────────
+
+router.get   ("/performance",       requirePermission("hr.performance.view"),   performance.listTasks);
+router.post  ("/performance",       requirePermission("hr.performance.manage"), performance.createTask);
+router.put   ("/performance/:id",   requirePermission("hr.performance.manage"), performance.updateTask);
+router.delete("/performance/:id",   requirePermission("hr.performance.manage"), performance.deleteTask);
 
 module.exports = router;

@@ -18,4 +18,10 @@ router.post("/coupons",       c.createCoupon);
 router.put("/coupons/:id",    c.updateCoupon);
 router.delete("/coupons/:id", c.deleteCoupon);
 
+// Client Orders
+router.get("/orders",         c.listOrders);
+router.post("/orders",        c.createOrder);
+router.put("/orders/:id",     c.updateOrder);
+router.delete("/orders/:id",  c.deleteOrder);
+
 module.exports = router;

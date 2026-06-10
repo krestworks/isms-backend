@@ -25,6 +25,16 @@ async function buildUserResponse(user) {
   const roles = [...new Set(userRoles.map(ur => ur.role.name))];
   const permSet = await getEffectivePermissions(user.id, "global");
 
+  // homeLocation is stored as a station ID — resolve to name for the frontend
+  let homeLocationName = undefined;
+  if (user.homeLocation) {
+    const station = await prisma.station.findUnique({
+      where: { id: user.homeLocation },
+      select: { name: true },
+    });
+    homeLocationName = station?.name ?? undefined;
+  }
+
   return {
     id: user.id,
     name: user.name,
@@ -34,7 +44,7 @@ async function buildUserResponse(user) {
     activeRole: user.activeRole,
     isEmployee: user.isEmployee,
     permissions: Array.from(permSet),
-    homeLocation: user.homeLocation ?? undefined,
+    homeLocation: homeLocationName,
     employeeId: user.employeeId,
     status: user.status,
     lastLogin: user.lastLogin,
