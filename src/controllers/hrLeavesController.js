@@ -50,14 +50,29 @@ async function updateLeaveType(req, res, next) {
       return res.status(403).json({ success: false, message: "Access denied" });
     }
 
-    const { name, daysAllowed, isPaid, isActive } = req.body;
+    const {
+      name, daysAllowed, isPaid, isActive,
+      carryOver, carryOverMax, noticeDays, maxConsecutive,
+      minTenureMonths, genderRestriction, accrualType,
+      excludeHolidays, excludeWeekends,
+    } = req.body;
+
     const updated = await prisma.leaveType.update({
       where: { id: req.params.id },
       data: {
-        name:        name        ? name.trim()                    : undefined,
-        daysAllowed: daysAllowed !== undefined ? parseInt(daysAllowed, 10) : undefined,
-        isPaid:      isPaid      !== undefined ? Boolean(isPaid)           : undefined,
-        isActive:    isActive    !== undefined ? Boolean(isActive)         : undefined,
+        name:              name              ? name.trim()                       : undefined,
+        daysAllowed:       daysAllowed       !== undefined ? parseInt(daysAllowed, 10)       : undefined,
+        isPaid:            isPaid            !== undefined ? Boolean(isPaid)                 : undefined,
+        isActive:          isActive          !== undefined ? Boolean(isActive)               : undefined,
+        carryOver:         carryOver         !== undefined ? Boolean(carryOver)              : undefined,
+        carryOverMax:      carryOverMax      !== undefined ? parseInt(carryOverMax, 10)      : undefined,
+        noticeDays:        noticeDays        !== undefined ? parseInt(noticeDays, 10)        : undefined,
+        maxConsecutive:    maxConsecutive    !== undefined ? parseInt(maxConsecutive, 10)    : undefined,
+        minTenureMonths:   minTenureMonths   !== undefined ? parseInt(minTenureMonths, 10)   : undefined,
+        genderRestriction: genderRestriction !== undefined ? (genderRestriction || null)     : undefined,
+        accrualType:       accrualType       !== undefined ? accrualType                     : undefined,
+        excludeHolidays:   excludeHolidays   !== undefined ? Boolean(excludeHolidays)        : undefined,
+        excludeWeekends:   excludeWeekends   !== undefined ? Boolean(excludeWeekends)        : undefined,
       },
     });
 
@@ -212,18 +227,96 @@ async function submitLeaveRequest(req, res, next) {
       return res.status(422).json({ success: false, message: "endDate must be on or after startDate" });
     }
 
-    // Count business days (excluding weekends)
+    const leaveType = await prisma.leaveType.findUnique({ where: { id: leaveTypeId } });
+    if (!leaveType || !leaveType.isActive) {
+      return res.status(404).json({ success: false, message: "Leave type not found or inactive" });
+    }
+
+    // ── Policy enforcement ────────────────────────────────────────────────────
+
+    // Notice period
+    if (leaveType.noticeDays > 0) {
+      const minStart = new Date();
+      minStart.setDate(minStart.getDate() + leaveType.noticeDays);
+      minStart.setHours(0, 0, 0, 0);
+      if (start < minStart) {
+        return res.status(422).json({
+          success: false,
+          message: `This leave type requires at least ${leaveType.noticeDays} day(s) notice. Earliest start: ${minStart.toISOString().split("T")[0]}`,
+        });
+      }
+    }
+
+    // Gender restriction
+    if (leaveType.genderRestriction) {
+      if (!callerEmployee.gender || callerEmployee.gender.toLowerCase() !== leaveType.genderRestriction.toLowerCase()) {
+        return res.status(403).json({
+          success: false,
+          message: `This leave type is only available for ${leaveType.genderRestriction} employees`,
+        });
+      }
+    }
+
+    // Minimum tenure
+    if (leaveType.minTenureMonths > 0 && callerEmployee.startDate) {
+      const tenureMs = Date.now() - new Date(callerEmployee.startDate).getTime();
+      const tenureMonths = tenureMs / (1000 * 60 * 60 * 24 * 30.44);
+      if (tenureMonths < leaveType.minTenureMonths) {
+        return res.status(409).json({
+          success: false,
+          message: `You need at least ${leaveType.minTenureMonths} month(s) of service to apply for this leave`,
+        });
+      }
+    }
+
+    // Fetch public holidays for the station and date range
+    const stationId = callerEmployee.stationId;
+    const holidays = await prisma.publicHoliday.findMany({
+      where: { OR: [{ stationId }, { stationId: "global" }] },
+    });
+
+    // Build a set of holiday date strings (YYYY-MM-DD) for the leave year(s)
+    const holidaySet = new Set();
+    if (leaveType.excludeHolidays) {
+      for (const h of holidays) {
+        const hDate = new Date(h.date);
+        if (h.isRecurring) {
+          // Apply to every year in the leave range
+          const yearsInRange = new Set();
+          const c2 = new Date(start);
+          while (c2 <= end) { yearsInRange.add(c2.getFullYear()); c2.setDate(c2.getDate() + 1); }
+          for (const yr of yearsInRange) {
+            const d = new Date(yr, hDate.getMonth(), hDate.getDate());
+            holidaySet.add(d.toISOString().split("T")[0]);
+          }
+        } else {
+          holidaySet.add(hDate.toISOString().split("T")[0]);
+        }
+      }
+    }
+
+    // Count working days (excluding weekends and/or holidays per policy)
     let days = 0;
     const cursor = new Date(start);
     while (cursor <= end) {
       const dow = cursor.getDay();
-      if (dow !== 0 && dow !== 6) days++;
+      const dateStr = cursor.toISOString().split("T")[0];
+      const isWeekend  = dow === 0 || dow === 6;
+      const isHoliday  = holidaySet.has(dateStr);
+      if (!(leaveType.excludeWeekends && isWeekend) && !isHoliday) days++;
       cursor.setDate(cursor.getDate() + 1);
     }
 
-    const leaveType = await prisma.leaveType.findUnique({ where: { id: leaveTypeId } });
-    if (!leaveType || !leaveType.isActive) {
-      return res.status(404).json({ success: false, message: "Leave type not found or inactive" });
+    if (days === 0) {
+      return res.status(422).json({ success: false, message: "The selected date range contains no working days" });
+    }
+
+    // Max consecutive days
+    if (leaveType.maxConsecutive > 0 && days > leaveType.maxConsecutive) {
+      return res.status(422).json({
+        success: false,
+        message: `This leave type allows a maximum of ${leaveType.maxConsecutive} consecutive working day(s) per request`,
+      });
     }
 
     const year = start.getFullYear();

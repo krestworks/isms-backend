@@ -15,6 +15,7 @@ const attendance  = require("../controllers/hrAttendanceController");
 const self        = require("../controllers/hrSelfController");
 const payroll     = require("../controllers/hrPayrollController");
 const performance = require("../controllers/hrPerformanceController");
+const holidays    = require("../controllers/hrHolidaysController");
 
 const router = Router();
 
@@ -76,6 +77,12 @@ router.post  ("/employees/:id/disciplinary",           requirePermission("hr.dis
 router.put   ("/employees/:id/disciplinary/:recordId", requirePermission("hr.disciplinary.record"),  employees.updateDisciplinaryRecord);
 
 // ── Leave Management ──────────────────────────────────────────────────────────
+
+// Public holidays
+router.get   ("/holidays",     requirePermission("hr.leaves.view"),       holidays.listHolidays);
+router.post  ("/holidays",     requirePermission("hr.setup.holidays"),    holidays.createHoliday);
+router.put   ("/holidays/:id", requirePermission("hr.setup.holidays"),    holidays.updateHoliday);
+router.delete("/holidays/:id", requirePermission("hr.setup.holidays"),    holidays.deleteHoliday);
 
 // Leave types (admin/manager configure, all can view)
 router.get   ("/leaves/types",       requirePermission("hr.leaves.view"),       leaves.listLeaveTypes);

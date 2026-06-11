@@ -263,19 +263,39 @@ model Attendance {
 // ── Leave Management ──────────────────────────────────────────────────────────
 
 model LeaveType {
-  id          String   @id @default(cuid())
-  name        String
-  daysAllowed Int      @default(21)
-  isPaid      Boolean  @default(true)
-  stationId   String   @default("global")
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String   @id @default(cuid())
+  name              String
+  daysAllowed       Int      @default(21)
+  isPaid            Boolean  @default(true)
+  stationId         String   @default("global")
+  isActive          Boolean  @default(true)
+  // Policy fields
+  carryOver         Boolean  @default(false)
+  carryOverMax      Int      @default(0)
+  noticeDays        Int      @default(0)
+  maxConsecutive    Int      @default(0)
+  minTenureMonths   Int      @default(0)
+  genderRestriction String?
+  accrualType       String   @default("annual")
+  excludeHolidays   Boolean  @default(true)
+  excludeWeekends   Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   requests LeaveRequest[]
   balances LeaveBalance[]
 
   @@unique([name, stationId])
+}
+
+model PublicHoliday {
+  id          String   @id @default(cuid())
+  name        String
+  date        DateTime
+  isRecurring Boolean  @default(true)
+  stationId   String   @default("global")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model LeaveBalance {
@@ -953,6 +973,7 @@ model BizProduct {
   unit                 String   @default("pcs")
   stockQty             Float    @default(0)
   reorderLevel         Float    @default(5)
+  imageUrl             String?  @db.Text
   expiryDate           String?
   requiresPrescription Boolean  @default(false)
   status               String   @default("active")

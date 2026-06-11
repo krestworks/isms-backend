@@ -116,7 +116,7 @@ async function listProducts(req, res) {
 async function createProduct(req, res) {
   try {
     const { businessId, name, categoryId, categoryName, sku, barcode, description,
-            markedPrice, price, costPrice, unit, stockQty, reorderLevel,
+            markedPrice, price, costPrice, unit, stockQty, reorderLevel, imageUrl,
             expiryDate, requiresPrescription, status } = req.body;
     if (!businessId || !name) return err(res, "businessId and name required", 400);
     const p = await prisma.bizProduct.create({
@@ -125,6 +125,7 @@ async function createProduct(req, res) {
         markedPrice: markedPrice ?? 0,
         price: price ?? 0, costPrice: costPrice ?? 0, unit: unit ?? "pcs",
         stockQty: stockQty ?? 0, reorderLevel: reorderLevel ?? 5,
+        imageUrl: imageUrl || null,
         expiryDate, requiresPrescription: requiresPrescription ?? false,
         status: status ?? "active",
       },
