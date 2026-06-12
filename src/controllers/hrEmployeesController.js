@@ -93,10 +93,12 @@ async function createEmployee(req, res, next) {
       salaryGrade, basicSalary,
     } = req.body;
 
-    // Station is always resolved from the caller — body.stationId is ignored
-    const stationId = await resolveStation(req);
+    // Resolve station: admins use x-station-id header; others use homeLocation.
+    // Fall back to body.stationId so that users without a homeLocation can still
+    // specify which station to onboard into (the permission check already passed).
+    const stationId = (await resolveStation(req)) || req.body.stationId || null;
     if (!stationId) {
-      return res.status(422).json({ success: false, message: "Station context required. Ensure your account has a home station or send x-station-id." });
+      return res.status(422).json({ success: false, message: "Station context required. Select a station in the form, or ask an admin to set your home station." });
     }
 
     if (!startDate) return res.status(422).json({ success: false, message: "startDate is required" });

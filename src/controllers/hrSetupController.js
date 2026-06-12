@@ -28,10 +28,7 @@ async function listDepartments(req, res, next) {
 
 async function createDepartment(req, res, next) {
   try {
-    const stationId = await resolveStation(req);
-    if (!stationId) {
-      return res.status(422).json({ success: false, message: "Station context required" });
-    }
+    const stationId = (await resolveStation(req)) || "global";
 
     const { name, description, parentId } = req.body;
 
@@ -165,10 +162,7 @@ async function listJobTitles(req, res, next) {
 
 async function createJobTitle(req, res, next) {
   try {
-    const stationId = await resolveStation(req);
-    if (!stationId) {
-      return res.status(422).json({ success: false, message: "Station context required" });
-    }
+    const stationId = (await resolveStation(req)) || "global";
 
     const { title, description, departmentId, grade } = req.body;
 

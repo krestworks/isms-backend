@@ -20,16 +20,32 @@ async function listLeaveTypes(req, res, next) {
 
 async function createLeaveType(req, res, next) {
   try {
-    const stationId = await resolveStation(req);
-    if (!stationId) {
-      return res.status(422).json({ success: false, message: "Station context required" });
-    }
+    const stationId = (await resolveStation(req)) || "global";
 
-    const { name, daysAllowed = 21, isPaid = true } = req.body;
+    const {
+      name, daysAllowed = 21, isPaid = true,
+      carryOver, carryOverMax, noticeDays, maxConsecutive,
+      minTenureMonths, genderRestriction, accrualType,
+      excludeHolidays, excludeWeekends,
+    } = req.body;
     if (!name) return res.status(422).json({ success: false, message: "name is required" });
 
     const lt = await prisma.leaveType.create({
-      data: { name: name.trim(), daysAllowed: parseInt(daysAllowed, 10), isPaid: Boolean(isPaid), stationId },
+      data: {
+        name: name.trim(),
+        daysAllowed:       parseInt(daysAllowed, 10),
+        isPaid:            Boolean(isPaid),
+        stationId,
+        carryOver:         carryOver         !== undefined ? Boolean(carryOver)              : undefined,
+        carryOverMax:      carryOverMax       !== undefined ? parseInt(carryOverMax, 10)      : undefined,
+        noticeDays:        noticeDays         !== undefined ? parseInt(noticeDays, 10)        : undefined,
+        maxConsecutive:    maxConsecutive     !== undefined ? parseInt(maxConsecutive, 10)    : undefined,
+        minTenureMonths:   minTenureMonths    !== undefined ? parseInt(minTenureMonths, 10)   : undefined,
+        genderRestriction: genderRestriction  || null,
+        accrualType:       accrualType        || undefined,
+        excludeHolidays:   excludeHolidays    !== undefined ? Boolean(excludeHolidays)       : undefined,
+        excludeWeekends:   excludeWeekends    !== undefined ? Boolean(excludeWeekends)       : undefined,
+      },
     });
 
     res.status(201).json({ success: true, message: "Leave type created", data: lt });

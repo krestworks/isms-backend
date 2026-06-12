@@ -207,6 +207,7 @@ model Employee {
   leaveBalances       LeaveBalance[]
   shiftAssignments    ShiftAssignment[]
   disciplinaryRecords DisciplinaryRecord[]
+  documents           EmployeeDocument[]
   payrolls            Payroll[]
   performanceTasks    PerformanceTask[]
 }
@@ -330,6 +331,27 @@ model LeaveRequest {
 
   employee  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   leaveType LeaveType @relation(fields: [leaveTypeId], references: [id])
+}
+
+// ── Employee Documents ─────────────────────────────────────────────────────────
+
+model EmployeeDocument {
+  id           String   @id @default(cuid())
+  employeeId   String
+  type         String
+  fileName     String
+  fileSize     Int      @default(0)
+  fileData     String?  @db.LongText
+  expiresOn    String?
+  status       String   @default("valid")
+  notes        String?  @db.Text
+  caseId       String?
+  uploadedBy   String
+  uploadedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 }
 
 // ── Disciplinary ──────────────────────────────────────────────────────────────

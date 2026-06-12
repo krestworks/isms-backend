@@ -98,12 +98,14 @@ const approveLeaveRules = [
 ];
 
 const onboardEmployeeRules = [
-  body("stationId").isLength({ min: 1 }).withMessage("stationId is required"),
-  body("startDate").isISO8601().withMessage("startDate must be a valid date"),
-  body("employmentType").optional().isIn(["FullTime", "PartTime", "Contract", "Intern"]),
-  body("contractType").optional().isIn(["Permanent", "Fixed-Term", "Casual"]),
-  body("gender").optional().isIn(["Male", "Female", "Other"]),
-  body("email").optional().isEmail().normalizeEmail(),
+  body("startDate").isISO8601().withMessage("startDate must be a valid date (YYYY-MM-DD)"),
+  body("employmentType").optional().isIn(["FullTime", "PartTime", "Contract", "Intern"])
+    .withMessage("employmentType must be one of: FullTime, PartTime, Contract, Intern"),
+  body("contractType").optional().isIn(["Permanent", "Fixed-Term", "Casual"])
+    .withMessage("contractType must be one of: Permanent, Fixed-Term, Casual"),
+  body("gender").optional().isIn(["Male", "Female", "Other"])
+    .withMessage("gender must be one of: Male, Female, Other"),
+  body("email").optional().isEmail().normalizeEmail().withMessage("email must be a valid email address"),
   body("basicSalary").optional().isFloat({ min: 0 }).withMessage("basicSalary must be a positive number"),
 ];
 
@@ -112,10 +114,12 @@ const onboardEmployeeRules = [
 function validate(req, res, next) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
+    const fieldErrors = errors.array().map(e => ({ field: e.path, message: e.msg }));
+    const summary = fieldErrors.map(e => `${e.field}: ${e.message}`).join("; ");
     return res.status(422).json({
       success: false,
-      message: "Validation failed",
-      errors: errors.array().map(e => ({ field: e.path, message: e.msg })),
+      message: summary,
+      errors: fieldErrors,
     });
   }
   next();

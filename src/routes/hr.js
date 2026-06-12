@@ -10,6 +10,7 @@ const {
 
 const setup       = require("../controllers/hrSetupController");
 const employees   = require("../controllers/hrEmployeesController");
+const documents   = require("../controllers/hrDocumentsController");
 const leaves      = require("../controllers/hrLeavesController");
 const attendance  = require("../controllers/hrAttendanceController");
 const self        = require("../controllers/hrSelfController");
@@ -67,6 +68,14 @@ router.post  ("/employees",                      requirePermission("hr.staff.cre
 router.get   ("/employees/:id",                  requirePermission("hr.staff.view"),      employees.getEmployee);
 router.put   ("/employees/:id",                  requirePermission("hr.staff.edit"),      employees.updateEmployee);
 router.post  ("/employees/:id/terminate",        requirePermission("hr.staff.terminate"), employees.terminateEmployee);
+
+// Documents
+router.get   ("/documents",         requirePermission("hr.staff.view"),   documents.listDocuments);
+router.post  ("/documents",         requirePermission("hr.staff.edit"),   documents.createDocument);
+router.get   ("/documents/:id",     requirePermission("hr.staff.view"),   documents.getDocument);
+router.get   ("/documents/:id/download", requirePermission("hr.staff.view"), documents.downloadDocument);
+router.put   ("/documents/:id",     requirePermission("hr.staff.edit"),   documents.updateDocument);
+router.delete("/documents/:id",     requirePermission("hr.staff.edit"),   documents.deleteDocument);
 
 // Disciplinary — station-level list
 router.get   ("/disciplinary",                         requirePermission("hr.disciplinary.view"),    employees.listAllDisciplinaryRecords);

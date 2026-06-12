@@ -189,7 +189,7 @@ async function getUser(req, res, next) {
 async function updateUser(req, res, next) {
   try {
     const { id } = req.params;
-    const { name, phone } = req.body;
+    const { name, phone, homeLocation } = req.body;
 
     const user = await prisma.user.findUnique({ where: { id } });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
@@ -205,14 +205,15 @@ async function updateUser(req, res, next) {
       }
     }
 
-    const updated = await prisma.user.update({
-      where: { id },
-      data: {
-        name: name || undefined,
-        phone: phone !== undefined ? (phone || null) : undefined,
-      },
-    });
+    const data = {
+      name:  name  !== undefined ? (name  || undefined) : undefined,
+      phone: phone !== undefined ? (phone || null)      : undefined,
+    };
+    if (isAdmin && homeLocation !== undefined) {
+      data.homeLocation = homeLocation || null;
+    }
 
+    const updated = await prisma.user.update({ where: { id }, data });
     res.json({ success: true, message: "User updated", data: await buildUserSummary(updated) });
   } catch (err) {
     next(err);
